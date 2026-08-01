@@ -1,379 +1,247 @@
 // ──────────────────────────────────────────────────────────────────────────────
-// Buscador local de licitaciones SEACE — `npm run web` → http://localhost:4321
-// Busca sobre los archivos mensuales del OECE (src/bulk.mjs). Filtros: periodo
-// (presets o rango de calendario), categoría, método, entidad, departamento,
-// estado, bandas de monto, solo-TI y con-adjudicación. Además gestiona las
-// ALERTAS por correo (alertas.json) que ejecuta `npm run alertas`.
+// Servidor de SEACE Alertas — `npm run web` → http://localhost:4321
+//
+// Lee de datos.db (procesos, reconstruible) y cuentas.db (usuarios, irreemplazable).
+// Requiere sesión para todo salvo la pantalla de acceso y los enlaces de correo.
+//
+// Sustituye al servidor anterior, que filtraba en memoria sobre los JSON mensuales.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
-import { loadRecentMonths } from './bulk.mjs';
-import { aplicarFiltros, mesesParaCubrir, MONTO_RANGOS } from './search.mjs';
-import { normalize } from './seace.mjs';
-import { fold } from './digest.mjs';
-import { cargarAlertas, guardarAlertas, cargarSeguimientos, guardarSeguimientos } from './alertasStore.mjs';
-
-const OECE = 'https://contratacionesabiertas.oece.gob.pe';
+import { abrirDatos, DATOS_DB } from './db.mjs';
+import { abrirCuentas, ahora } from './cuentas.mjs';
+import {
+  buscar, buscarEntidades, buscarProveedores, facetas, estadisticas,
+  proximosVencimientos, hoyLima,
+} from './buscar.mjs';
+import {
+  solicitarAcceso, canjearAcceso, responderInvitacion, cerrarSesion,
+  usuarioDeSesion, leerCookie, cookieSesion, enlaceAcceso, COOKIE,
+} from './auth.mjs';
+import { enviarAcceso } from './correosAuth.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 4321);
-const config = JSON.parse(readFileSync(join(ROOT, 'config.json'), 'utf8'));
+const WEB = join(ROOT, 'web');
 
-// Cache en memoria por nº de meses cargados (el disco ya cachea las descargas;
-// esto evita re-parsear 10-30 MB de JSON en cada tecleo).
-const memCache = new Map(); // nMeses → { at, procesos }
-const MEM_TTL_MS = 30 * 60 * 1000;
-
-async function getProcesos(nMeses) {
-  const hit = memCache.get(nMeses);
-  if (hit && Date.now() - hit.at < MEM_TTL_MS) return hit.procesos;
-  const procesos = await loadRecentMonths(nMeses, { onProgress: (msg) => console.log('   ' + msg) });
-  memCache.set(nMeses, { at: Date.now(), procesos });
-  return procesos;
+if (!existsSync(DATOS_DB)) {
+  console.error('\n✘ No existe datos/datos.db. Créala primero con:\n\n    npm run ingesta\n');
+  process.exit(1);
 }
 
-// Catálogo de entidades del OECE (buyers.json, ~3.3k) — cacheado 24 h en memoria.
-let _entidades = null;
-let _entidadesAt = 0;
-async function getEntidades() {
-  if (_entidades && Date.now() - _entidadesAt < 24 * 60 * 60 * 1000) return _entidades;
-  const r = await fetch(`${OECE}/static/buyers.json`, { headers: { accept: 'application/json' } });
-  if (!r.ok) throw new Error(`buyers.json HTTP ${r.status}`);
-  const data = await r.json();
-  _entidades = Object.entries(data).map(([id, nombre]) => ({ id, nombre: String(nombre) }))
-    .sort((a, b) => a.nombre.localeCompare(b.nombre));
-  _entidadesAt = Date.now();
-  return _entidades;
-}
+const datos = abrirDatos({ soloLectura: true });
+const cuentas = abrirCuentas();
+const siglas = JSON.parse(readFileSync(join(ROOT, 'siglas.json'), 'utf8'));
 
-// query params → objeto de filtros de aplicarFiltros()
-function filtrosDeQuery(sp) {
-  const csv = (k) => (sp.get(k) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  return {
-    q: sp.get('q') ?? '',
-    categoria: sp.get('categoria') ?? '',
-    metodo: sp.get('metodo') ?? '',
-    entidad: sp.get('entidad') ?? '',
-    soloTI: sp.get('soloTI') === '1',
-    conAdjudicacion: sp.get('conAdjudicacion') === '1',
-    desde: sp.get('desde') || null,
-    hasta: sp.get('hasta') || null,
-    montoRangos: csv('montoRangos'),
-    departamentos: csv('departamentos'),
-    estados: csv('estados'),
-  };
-}
+// Las facetas cambian solo cuando hay ingesta nueva; se calculan una vez.
+let _facetas = null;
+const getFacetas = () => (_facetas ??= facetas(datos));
 
-const json = (res, code, body) => {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
+// ── Utilidades HTTP ───────────────────────────────────────────────────────────
+
+const json = (res, code, cuerpo, cabeceras = {}) => {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', ...cabeceras });
+  res.end(JSON.stringify(cuerpo));
 };
+
+const TIPOS = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
+function servirArchivo(res, nombre, cabeceras = {}) {
+  const ruta = join(WEB, nombre);
+  if (!ruta.startsWith(WEB) || !existsSync(ruta)) { res.writeHead(404); res.end('No encontrado'); return; }
+  res.writeHead(200, { 'Content-Type': `${TIPOS[extname(ruta)] ?? 'text/plain'}; charset=utf-8`, ...cabeceras });
+  res.end(readFileSync(ruta));
+}
 
 const leerBody = (req) => new Promise((resolve, reject) => {
   let buf = '';
-  req.on('data', (d) => { buf += d; if (buf.length > 100_000) reject(new Error('body demasiado grande')); });
-  req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch (e) { reject(e); } });
+  req.on('data', (d) => { buf += d; if (buf.length > 100_000) reject(new Error('Cuerpo demasiado grande')); });
+  req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch { reject(new Error('JSON inválido')); } });
 });
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Página mínima para los enlaces de correo (aciertos y errores). */
+const paginaAviso = (titulo, mensaje, { enlace = '/', textoEnlace = 'Ir al buscador' } = {}) => `<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>${titulo}</title>
+<style>body{font-family:Arial,Helvetica,sans-serif;background:#f3f4f6;margin:0;display:flex;
+min-height:100vh;align-items:center;justify-content:center;padding:20px}
+.c{background:#fff;border-radius:12px;padding:36px 40px;max-width:460px;text-align:center;
+box-shadow:0 4px 20px rgba(0,0,0,.06);border-top:4px solid #FF4DA6}
+h1{color:#047EA9;font-size:19px;margin:0 0 12px}p{color:#374151;font-size:14px;line-height:1.6;margin:0 0 22px}
+a{display:inline-block;background:#047EA9;color:#fff;padding:11px 24px;border-radius:8px;
+text-decoration:none;font-size:14px;font-weight:bold}</style></head>
+<body><div class="c"><h1>${titulo}</h1><p>${mensaje}</p><a href="${enlace}">${textoEnlace}</a></div></body></html>`;
+
+// ── Lectura de filtros desde la query ─────────────────────────────────────────
+
+function filtrosDeQuery(sp) {
+  const csv = (k) => (sp.get(k) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  return {
+    entidades: csv('entidades'),
+    objeto: sp.get('objeto') ?? '',
+    proveedor: sp.get('proveedor') ?? '',
+    desde: sp.get('desde') || null,
+    hasta: sp.get('hasta') || null,
+    categorias: csv('categorias'),
+    metodos: csv('metodos'),
+    estados: csv('estados'),
+    departamentos: csv('departamentos'),
+    montos: csv('montos'),
+    conAdjudicacion: sp.get('conAdjudicacion') === '1',
+    soloUnPostor: sp.get('soloUnPostor') === '1',
+  };
+}
+
+// Rutas que no exigen sesión.
+const PUBLICAS = new Set(['/entrar', '/acceso', '/invitacion', '/api/acceso', '/app.css', '/app.js']);
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+  const ruta = url.pathname;
 
   try {
-    if (url.pathname === '/' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(readFileSync(join(ROOT, 'web', 'index.html')));
+    const sesion = leerCookie(req, COOKIE);
+    const usuario = usuarioDeSesion(cuentas, sesion);
+
+    // ── Acceso ────────────────────────────────────────────────────────────────
+
+    if (ruta === '/entrar' && req.method === 'GET') {
+      if (usuario) { res.writeHead(302, { Location: '/' }); res.end(); return; }
+      servirArchivo(res, 'entrar.html');
       return;
     }
 
-    if (url.pathname === '/api/buscar' && req.method === 'GET') {
-      const filtros = filtrosDeQuery(url.searchParams);
-      const procesos = await getProcesos(mesesParaCubrir(filtros.desde));
-      const resultados = aplicarFiltros(procesos, filtros, config);
+    if (ruta === '/api/acceso' && req.method === 'POST') {
+      const { email } = await leerBody(req);
+      const r = solicitarAcceso(cuentas, email);
+      if (!r.ok) { json(res, 429, { error: r.error }); return; }
+      if (r.token) {
+        const enlace = enlaceAcceso(r.token);
+        const enviado = await enviarAcceso(r.usuario.email, { enlace, minutos: r.minutos });
+        // Sin SMTP configurado el enlace se imprime en consola: así se puede
+        // trabajar en local sin montar correo. Nunca se devuelve al navegador.
+        if (!enviado) console.log(`\n🔑 Enlace de acceso para ${r.usuario.email}:\n   ${enlace}\n`);
+      }
+      json(res, 200, { mensaje: r.mensaje });
+      return;
+    }
+
+    if (ruta === '/acceso' && req.method === 'GET') {
+      const r = canjearAcceso(cuentas, url.searchParams.get('token'));
+      if (!r.ok) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(paginaAviso('Enlace no válido', r.error, { enlace: '/entrar', textoEnlace: 'Pedir uno nuevo' }));
+        return;
+      }
+      res.writeHead(302, { Location: '/', 'Set-Cookie': cookieSesion(r.sesion) });
+      res.end();
+      return;
+    }
+
+    if (ruta === '/invitacion' && req.method === 'GET') {
+      const acepta = url.searchParams.get('respuesta') !== 'no';
+      const r = responderInvitacion(cuentas, url.searchParams.get('token'), acepta);
+      if (!r.ok) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(paginaAviso('Invitación no válida', r.error, { enlace: '/entrar', textoEnlace: 'Ir al acceso' }));
+        return;
+      }
+      if (!r.aceptada) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(paginaAviso('Invitación rechazada',
+          'No recibirás correos de esta alerta. Puedes cerrar esta página.',
+          { enlace: '/entrar', textoEnlace: 'Entrar de todos modos' }));
+        return;
+      }
+      res.writeHead(302, { Location: '/?alerta=' + r.alertaId, 'Set-Cookie': cookieSesion(r.sesion) });
+      res.end();
+      return;
+    }
+
+    if (ruta === '/api/salir' && req.method === 'POST') {
+      cerrarSesion(cuentas, sesion);
+      json(res, 200, { ok: true }, { 'Set-Cookie': cookieSesion('', { borrar: true }) });
+      return;
+    }
+
+    // ── A partir de aquí hace falta sesión ────────────────────────────────────
+
+    if (!usuario && !PUBLICAS.has(ruta)) {
+      if (ruta.startsWith('/api/')) { json(res, 401, { error: 'Necesitas iniciar sesión.' }); return; }
+      res.writeHead(302, { Location: '/entrar' }); res.end();
+      return;
+    }
+
+    if (ruta === '/' && req.method === 'GET') { servirArchivo(res, 'app.html'); return; }
+    if (ruta === '/app.css' || ruta === '/app.js') { servirArchivo(res, ruta.slice(1)); return; }
+
+    if (ruta === '/api/yo' && req.method === 'GET') {
+      const estudio = usuario.estudio_id
+        ? cuentas.prepare('SELECT nombre FROM estudios WHERE id = ?').get(usuario.estudio_id)?.nombre
+        : null;
       json(res, 200, {
-        total: resultados.length,
-        universo: procesos.length,
-        resultados: resultados.slice(0, 150),
-        truncado: resultados.length > 150,
+        usuario: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, estudio },
+        facetas: getFacetas(),
+        hoy: hoyLima(),
       });
       return;
     }
 
-    if (url.pathname === '/entidad' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(readFileSync(join(ROOT, 'web', 'entidad.html')));
-      return;
-    }
+    // ── Búsqueda ──────────────────────────────────────────────────────────────
 
-    // ── Catálogo de entidades (buyers.json del OECE, cacheado 24 h) ──
-    if (url.pathname === '/api/entidades' && req.method === 'GET') {
-      json(res, 200, { entidades: await getEntidades() });
-      return;
-    }
-
-    // ── Historial de compras de una entidad (buyerProcesses + buyerContracts) ──
-    if (url.pathname === '/api/entidad' && req.method === 'GET') {
-      const idParam = (url.searchParams.get('id') ?? '').trim();
-      const nombreParam = (url.searchParams.get('nombre') ?? '').trim();
-      const entidades = await getEntidades();
-      let ent = idParam ? entidades.find((e) => e.id === idParam) : null;
-      if (!ent && nombreParam) {
-        const objetivo = fold(nombreParam);
-        ent = entidades.find((e) => fold(e.nombre) === objetivo) ??
-              entidades.find((e) => fold(e.nombre).includes(objetivo));
-      }
-      if (!ent) { json(res, 404, { error: 'Entidad no encontrada en el catálogo del OECE' }); return; }
-
-      // OJO parámetros (reverse-engineered del portal): el id va en `buyerID`
-      // (con `buyer` la API ignora el filtro y devuelve TODO el dataset), y los
-      // procesos se ordenan con `order_processes_date=desc`. Los contratos no
-      // aceptan orden — se toma la primera página como muestra y se ordena aquí.
-      const traer = async (ep, extra) => {
-        const r = await fetch(`${OECE}/api/v1/${ep}?format=json&buyerID=${encodeURIComponent(ent.id)}&page=1&paginateBy=50${extra}`,
-          { headers: { accept: 'application/json' } });
-        if (!r.ok) return { results: [], pagination: null };
-        return r.json();
-      };
-      const [pr, ct] = await Promise.all([
-        traer('buyerProcesses', '&order_processes_date=desc'),
-        traer('buyerContracts', ''),
-      ]);
-
-      const procesos = (pr.results ?? []).map((x) => normalize(x.compiledRelease ?? x));
-      const contratos = (ct.results ?? []).map((c) => ({
-        titulo: [c.title, c.description].filter(Boolean).join(' — ') || '(sin título)',
-        firmado: c.dateSigned ?? c.contractDate ?? null,
-        monto: c.value?.amount ?? 0,
-        moneda: c.value?.currency ?? 'PEN',
-        inicio: c.period?.startDate ?? null,
-        fin: c.period?.endDate ?? null,
-        proveedores: (c.suppliers ?? []).map((s) => s.name ?? s).filter(Boolean),
-      })).sort((a, b) => new Date(b.firmado ?? 0) - new Date(a.firmado ?? 0));
-
-      json(res, 200, {
-        entidad: ent.nombre,
-        id: ent.id,
-        totalProcesos: pr.pagination?.total_results ?? procesos.length,
-        totalContratos: ct.pagination?.total_results ?? contratos.length,
-        procesos: procesos.slice(0, 50),
-        contratos: contratos.slice(0, 50),
-        nota: 'Procesos: los 50 más recientes. Contratos: muestra de 50 (la API del OECE no permite ordenarlos; el total real está en totalContratos).',
+    if (ruta === '/api/buscar' && req.method === 'GET') {
+      const t0 = Date.now();
+      const r = buscar(datos, filtrosDeQuery(url.searchParams), {
+        limite: Math.min(100, Number(url.searchParams.get('limite')) || 25),
+        pagina: Math.max(1, Number(url.searchParams.get('pagina')) || 1),
+        orden: url.searchParams.get('orden') ?? 'reciente',
       });
+      json(res, 200, { ...r, ms: Date.now() - t0 });
       return;
     }
 
-    // ── Estadísticas sobre los procesos que pasan los filtros actuales ──
-    if (url.pathname === '/api/stats' && req.method === 'GET') {
-      const filtros = filtrosDeQuery(url.searchParams);
-      const procesos = await getProcesos(mesesParaCubrir(filtros.desde));
-      const sel = aplicarFiltros(procesos, filtros, config);
-
-      const top = (map, n = 10) => [...map.entries()].sort((a, b) => b[1].monto - a[1].monto || b[1].n - a[1].n)
-        .slice(0, n).map(([k, v]) => ({ nombre: k, monto: Math.round(v.monto), procesos: v.n }));
-      const acc = () => new Map();
-      const add = (m, k, monto) => {
-        if (!k) return;
-        const e = m.get(k) ?? { monto: 0, n: 0 };
-        e.monto += monto; e.n += 1; m.set(k, e);
-      };
-
-      const porEntidad = acc(), porProveedor = acc(), porCategoria = acc(), porDepartamento = acc(), porMes = acc();
-      let montoTotal = 0, conMonto = 0;
-      for (const p of sel) {
-        const m = p.monto > 0 ? p.monto : 0;
-        if (m > 0) { montoTotal += m; conMonto++; }
-        add(porEntidad, p.entidad, m);
-        // Proveedores: monto ADJUDICADO real de cada award (no el referencial del
-        // proceso — un proceso multi-award repartiría su total a cada ganador).
-        for (const adj of p.adjudicaciones ?? []) {
-          const provs = adj.proveedores ?? [];
-          const cuota = provs.length > 0 ? (adj.monto ?? 0) / provs.length : 0;
-          for (const prov of provs) add(porProveedor, prov, cuota);
-        }
-        add(porCategoria, p.categoria, m);
-        add(porDepartamento, p.departamento, m);
-        add(porMes, (p.fecha ?? '').slice(0, 7), m);
-      }
-      json(res, 200, {
-        procesos: sel.length,
-        montoTotal: Math.round(montoTotal),
-        procesosConMonto: conMonto,
-        topEntidades: top(porEntidad),
-        topProveedores: top(porProveedor),
-        porCategoria: top(porCategoria, 8),
-        porDepartamento: top(porDepartamento, 26),
-        porMes: [...porMes.entries()].sort().map(([k, v]) => ({ nombre: k, monto: Math.round(v.monto), procesos: v.n })),
-      });
+    if (ruta === '/api/entidades' && req.method === 'GET') {
+      json(res, 200, { entidades: buscarEntidades(datos, url.searchParams.get('q') ?? '', { siglas, limite: 12 }) });
       return;
     }
 
-    // ── Seguimientos por proceso (🔔 en una tarjeta) ──
-    if (url.pathname === '/api/seguimientos' && req.method === 'GET') {
-      const email = (url.searchParams.get('email') ?? '').trim().toLowerCase();
-      json(res, 200, { seguimientos: cargarSeguimientos().filter((s) => !email || s.emails.includes(email)) });
+    if (ruta === '/api/proveedores' && req.method === 'GET') {
+      json(res, 200, { proveedores: buscarProveedores(datos, url.searchParams.get('q') ?? '', { limite: 12 }) });
       return;
     }
 
-    if (url.pathname === '/api/seguimientos' && req.method === 'POST') {
-      const body = await leerBody(req);
-      const emails = [...new Set(String(body.emails ?? body.email ?? '').split(',').concat(Array.isArray(body.emails) ? body.emails : [])
-        .map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
-      if (emails.length === 0 || emails.some((e) => !EMAIL_RE.test(e))) {
-        json(res, 400, { error: 'Hay un correo inválido (sepáralos por coma)' }); return;
-      }
-      const ocid = String(body.ocid ?? '').trim();
-      if (!ocid) { json(res, 400, { error: 'Falta el ocid del proceso' }); return; }
-      const seguimientos = cargarSeguimientos();
-      if (seguimientos.some((s) => s.ocid === ocid && emails.every((e) => s.emails.includes(e)))) {
-        json(res, 200, { ok: true, yaExistia: true }); return;
-      }
-      const seg = {
-        id: randomUUID(),
-        ocid,
-        emails,
-        titulo: String(body.titulo ?? '').slice(0, 140),
-        entidad: String(body.entidad ?? '').slice(0, 120),
-        creadaEl: new Date().toISOString(),
-        // Snapshot para detectar cambios (estados/adjudicación/cierre) en cada corrida.
-        snapshot: {
-          estados: Array.isArray(body.estados) ? body.estados : [],
-          proveedores: Array.isArray(body.proveedores) ? body.proveedores : [],
-          cierreOfertas: body.cierreOfertas ?? null,
-        },
-      };
-      seguimientos.push(seg);
-      guardarSeguimientos(seguimientos);
-      json(res, 200, { ok: true, seguimiento: seg });
+    if (ruta === '/api/estadisticas' && req.method === 'GET') {
+      json(res, 200, estadisticas(datos, filtrosDeQuery(url.searchParams), {
+        medida: url.searchParams.get('medida') === 'monto' ? 'monto' : 'procesos',
+      }));
       return;
     }
 
-    if (url.pathname === '/api/seguimientos' && req.method === 'DELETE') {
-      const id = url.searchParams.get('id') ?? '';
-      const seguimientos = cargarSeguimientos();
-      const next = seguimientos.filter((s) => s.id !== id);
-      guardarSeguimientos(next);
-      json(res, 200, { ok: true, borrado: seguimientos.length !== next.length });
+    if (ruta === '/api/vencimientos' && req.method === 'GET') {
+      const dias = Math.min(90, Number(url.searchParams.get('dias')) || 14);
+      json(res, 200, { dias, vencimientos: proximosVencimientos(datos, filtrosDeQuery(url.searchParams), { dias }) });
       return;
     }
 
-    // ── Inspector de la ficha del SEACE ──
-    // GET /api/ficha?id=<GUID o número>  (acepta pegar "…&ptoRetorno=LOCAL")
-    // Trae la página de fichaSeleccion con ese id y devuelve TODO lo que el
-    // servidor del SEACE responde: status, título, formularios, inputs ocultos,
-    // tablas y texto visible. Sirve para comprobar qué expone realmente esa
-    // página fuera de una sesión del buscador (spoiler: el esqueleto sin datos —
-    // la ficha carga sus datos desde la SESIÓN de navegación del buscador).
-    if (url.pathname === '/api/ficha' && req.method === 'GET') {
-      const rawId = (url.searchParams.get('id') ?? '').trim();
-      const id = rawId.split('&')[0].trim();
-      if (!id) { json(res, 400, { error: 'Falta ?id= (GUID o número de la ficha)' }); return; }
-      const target = `https://prod2.seace.gob.pe/seacebus-uiwd-pub/fichaSeleccion/fichaSeleccion.xhtml?id=${encodeURIComponent(id)}&ptoRetorno=LOCAL`;
-
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30_000);
-      let r, html;
-      try {
-        r = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; seace-alertas/1.0)' }, signal: ctrl.signal });
-        html = await r.text();
-      } finally {
-        clearTimeout(timer);
-      }
-
-      const strip = (s) => s
-        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<[^>]+>/g, '\n')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&aacute;/g, 'á').replace(/&eacute;/g, 'é').replace(/&iacute;/g, 'í')
-        .replace(/&oacute;/g, 'ó').replace(/&uacute;/g, 'ú').replace(/&ntilde;/g, 'ñ')
-        .replace(/[ \t]+/g, ' ')
-        .split('\n').map((l) => l.trim()).filter(Boolean);
-
-      // Tablas → filas → celdas (texto plano)
-      const tablas = [...html.matchAll(/<table[\s\S]*?<\/table>/gi)].slice(0, 30).map((m) => {
-        const filas = [...m[0].matchAll(/<tr[\s\S]*?<\/tr>/gi)].slice(0, 25).map((tr) =>
-          [...tr[0].matchAll(/<t[hd][\s\S]*?<\/t[hd]>/gi)].map((td) => strip(td[0]).join(' ').trim()).filter(Boolean)
-        ).filter((f) => f.length > 0);
-        return filas;
-      }).filter((t) => t.length > 0);
-
-      json(res, 200, {
-        urlConsultada: target,
-        http: { status: r.status, contentType: r.headers.get('content-type'), bytes: html.length },
-        titulo: (html.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? null,
-        esPaginaDeError: /pagina no encontrada/i.test(html),
-        formularios: [...html.matchAll(/<form[^>]*id="([^"]+)"/g)].map((m) => m[1]),
-        inputsOcultos: [...html.matchAll(/<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g)]
-          .slice(0, 20).map((m) => ({ name: m[1], value: m[2].slice(0, 80) })),
-        tablas,
-        textoVisible: strip(html).slice(0, 400),
-        nota: 'Si "tablas" y "textoVisible" no muestran datos del proceso, es porque la ficha del SEACE carga sus datos desde la sesión del buscador (el id solo no basta fuera de esa sesión).',
-      });
-      return;
-    }
-
-    // ── Alertas por correo ──
-    if (url.pathname === '/api/alertas' && req.method === 'GET') {
-      const email = (url.searchParams.get('email') ?? '').trim().toLowerCase();
-      const alertas = cargarAlertas().filter((a) => (a.emails ?? [a.email]).includes(email));
-      json(res, 200, { alertas });
-      return;
-    }
-
-    if (url.pathname === '/api/alertas' && req.method === 'POST') {
-      const body = await leerBody(req);
-      // Uno o varios correos: "a@x.com, b@x.com" o ["a@x.com","b@x.com"].
-      const emails = [...new Set(
-        (Array.isArray(body.emails) ? body.emails : String(body.email ?? body.emails ?? '').split(','))
-          .map((e) => String(e).trim().toLowerCase())
-          .filter(Boolean)
-      )];
-      if (emails.length === 0 || emails.some((e) => !EMAIL_RE.test(e))) {
-        json(res, 400, { error: 'Hay un correo inválido (sepáralos por coma)' }); return;
-      }
-      if (emails.length > 20) { json(res, 400, { error: 'Máximo 20 correos por alerta' }); return; }
-      const alertas = cargarAlertas();
-      if (alertas.filter((a) => (a.emails ?? [a.email]).includes(emails[0])).length >= 10) {
-        json(res, 400, { error: 'Máximo 10 alertas por correo' }); return;
-      }
-      const alerta = {
-        id: randomUUID(),
-        emails,
-        nombre: String(body.nombre ?? '').slice(0, 80) || 'Alerta SEACE',
-        filtros: { ...(body.filtros ?? {}), desde: null, hasta: null }, // el periodo lo pone el runner
-        creadaEl: new Date().toISOString(),
-        // El runner solo envía procesos publicados DESPUÉS de este corte.
-        ultimaFecha: new Date().toISOString(),
-      };
-      alertas.push(alerta);
-      guardarAlertas(alertas);
-      json(res, 200, { ok: true, alerta });
-      return;
-    }
-
-    if (url.pathname === '/api/alertas' && req.method === 'DELETE') {
-      const id = url.searchParams.get('id') ?? '';
-      const alertas = cargarAlertas();
-      const next = alertas.filter((a) => a.id !== id);
-      guardarAlertas(next);
-      json(res, 200, { ok: true, borrada: alertas.length !== next.length });
-      return;
-    }
-
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('No encontrado');
   } catch (err) {
-    console.error(`Error en ${url.pathname}:`, err);
+    console.error(`Error en ${ruta}:`, err);
     json(res, 500, { error: err.message });
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`🔎 Buscador SEACE → http://localhost:${PORT}`);
-  console.log('   (la primera búsqueda de cada rango descarga los archivos mensuales del OECE — luego es instantáneo)');
+  const n = datos.prepare('SELECT count(*) AS n FROM procesos').get().n;
+  const u = cuentas.prepare('SELECT count(*) AS n FROM usuarios WHERE activo = 1').get().n;
+  console.log(`\n🔎 SEACE Alertas → http://localhost:${PORT}`);
+  console.log(`   ${n.toLocaleString('es-PE')} procesos · ${u} usuario(s) activo(s) · hoy en Lima ${hoyLima()}`);
+  if (u === 0) console.log('   ⚠ No hay usuarios. Crea el primero: npm run usuario -- --crear tu@correo.pe');
+  if (!process.env.SMTP_USER) console.log('   ℹ Sin SMTP: los enlaces de acceso se imprimen aquí en la consola.');
+  console.log('');
 });
+
+for (const señal of ['SIGINT', 'SIGTERM']) {
+  process.on(señal, () => { datos.close(); cuentas.close(); process.exit(0); });
+}

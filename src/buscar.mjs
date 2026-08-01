@@ -239,6 +239,82 @@ export function buscarProveedores(db, texto, { limite = 20 } = {}) {
     LIMIT ?`).all(fts, limite);
 }
 
+// ── Estadísticas ──────────────────────────────────────────────────────────────
+
+/**
+ * Estadísticas del conjunto filtrado.
+ *
+ * `medida` decide qué mide cada barra:
+ *   'procesos' (por defecto) → nº de procesos. Fiable siempre.
+ *   'monto'                  → soles, sumando SOLO monto_pen.
+ *
+ * Por qué el defecto es 'procesos': apenas el 43,6 % de los procesos publica su
+ * monto referencial (el SEACE lo protege hasta la buena pro). Un ranking "por
+ * monto" no dice quién compra más, dice quién compra más *entre los que
+ * revelaron el importe*. La cobertura se devuelve en `cobertura` para poder
+ * enseñarla en pantalla en vez de esconderla en una nota al pie.
+ */
+export function estadisticas(db, filtros = {}, { medida = 'procesos', top = 10 } = {}) {
+  const { sql, par } = condiciones(db, filtros);
+  const metrica = medida === 'monto' ? 'COALESCE(sum(p.monto_pen), 0)' : 'count(*)';
+
+  const resumen = db.prepare(`
+    SELECT count(*) AS procesos,
+           count(DISTINCT p.entidad_id) AS entidades,
+           sum(CASE WHEN p.monto > 0 THEN 1 ELSE 0 END) AS con_monto,
+           sum(CASE WHEN p.monto > 0 AND p.monto_pen IS NULL THEN 1 ELSE 0 END) AS sin_convertir,
+           COALESCE(sum(p.monto_pen), 0) AS monto_total,
+           COALESCE(sum(p.n_postores), 0) AS postores,
+           sum(CASE WHEN p.n_postores = 1 THEN 1 ELSE 0 END) AS un_postor
+    FROM procesos p ${sql}`).get(...par);
+
+  const adjudicados = db.prepare(`SELECT count(*) AS n FROM procesos p ${sql}
+    ${sql ? 'AND' : 'WHERE'} EXISTS (SELECT 1 FROM actores a WHERE a.ocid = p.ocid AND a.rol='supplier')`)
+    .get(...par).n;
+
+  const grupo = (expr, join = '') => db.prepare(`
+    SELECT ${expr} AS nombre, ${metrica} AS valor, count(*) AS procesos
+    FROM procesos p ${join} ${sql}
+    ${sql ? 'AND' : 'WHERE'} ${expr} IS NOT NULL
+    GROUP BY ${expr} ORDER BY valor DESC LIMIT ?`).all(...par, top);
+
+  // Proveedores: se mide por el monto de SU adjudicación, no por el referencial
+  // del proceso. Un proceso multi-award (medicinas, por ejemplo) se reparte entre
+  // varios ganadores y atribuirle a cada uno el total del proceso lo multiplicaría.
+  const proveedores = db.prepare(`
+    SELECT r.nombre,
+           ${medida === 'monto'
+      ? `COALESCE(sum(a.monto_pen / max(1, (SELECT count(*) FROM adjudicacion_ruc r2 WHERE r2.adjudicacion_id = a.id))), 0)`
+      : 'count(DISTINCT p.ocid)'} AS valor,
+           count(DISTINCT p.ocid) AS procesos
+    FROM procesos p
+    JOIN adjudicaciones a ON a.ocid = p.ocid
+    JOIN adjudicacion_ruc r ON r.adjudicacion_id = a.id
+    ${sql}
+    GROUP BY r.ruc ORDER BY valor DESC LIMIT ?`).all(...par, top);
+
+  const porMes = db.prepare(`
+    SELECT substr(p.fecha_dia, 1, 7) AS nombre, ${metrica} AS valor, count(*) AS procesos
+    FROM procesos p ${sql}
+    ${sql ? 'AND' : 'WHERE'} p.fecha_dia IS NOT NULL
+    GROUP BY nombre ORDER BY nombre`).all(...par);
+
+  return {
+    medida,
+    resumen: {
+      ...resumen,
+      adjudicados,
+      // El dato que evita que alguien cite una cifra que no puede defender.
+      cobertura: resumen.procesos ? +(resumen.con_monto / resumen.procesos * 100).toFixed(1) : 0,
+    },
+    entidades: grupo('e.nombre', 'LEFT JOIN entidades e ON e.id = p.entidad_id'),
+    proveedores,
+    categorias: grupo('p.categoria'),
+    departamentos: grupo('e.departamento', 'LEFT JOIN entidades e ON e.id = p.entidad_id'),
+    porMes,
+  };
+}
+
 /** Valores disponibles para los desplegables — derivados de los datos, no hardcodeados. */
 export function facetas(db) {
   const col = (s) => db.prepare(s).all();

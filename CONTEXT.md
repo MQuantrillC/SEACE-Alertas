@@ -83,15 +83,21 @@ Dependencias: solo **`adm-zip`** (descomprimir los meses) y **`nodemailer`** (SM
 
 ## 3.bis Capa nueva: datos.db (SQLite)
 
-En construcción desde el 2026-08-01, conviviendo con el buscador viejo hasta que
-`server.mjs` se migre.
+⚠ **Estado de la migración (2026-08-01).** El buscador (`npm run web`) ya corre
+entero sobre SQLite. **El digest (`npm run digest`) y el runner de alertas
+(`npm run alertas`) siguen en el camino viejo** (`bulk.mjs`, `search.mjs`,
+`alertasStore.mjs`, `alertas.json`) y arrastran sus bugs. Se migran en el
+siguiente paso; por eso esos módulos todavía no se borran.
 
 ```
 src/db.mjs         Esquema y conexión de datos/datos.db (gitignored)
 src/ingesta.mjs    Zips mensuales del OECE → SQLite.  npm run ingesta
-src/buscar.mjs     Búsqueda, autocompletados, facetas y vencimientos (SQL)
-src/verificar*.mjs Comprobaciones: datos, siglas y búsqueda
+src/buscar.mjs     Búsqueda, autocompletados, facetas, estadísticas y vencimientos
+src/server.mjs     Servidor (reescrito): rutas de sesión + API sobre SQLite
+src/verificar*.mjs Comprobaciones: datos, siglas, búsqueda y cuentas
 siglas.json        92 siglas → nombre oficial (ESSALUD → SEGURO SOCIAL DE SALUD)
+web/entrar.html    Pantalla de acceso
+web/app.html/.css/.js   Buscador nuevo
 ```
 
 Estado actual de la base: **23 meses · 152.173 procesos · 3.316 entidades ·
@@ -258,10 +264,13 @@ que también haya señal alta.
 - **Las estadísticas del buscador viejo suman monedas distintas** (USD/EUR/GBP como
   soles). `amount_PEN` corrige eso, pero **no está siempre**: falta en el 10 % de los
   procesos en USD con monto real. La ingesta lo deja en NULL, nunca en 0.
-- **El "cierre de ofertas" no sirve para avisar de plazos.** `tenderPeriod.endDate`
-  coincide con el día de publicación en el 95,6 % de los casos y no tiene ningún
-  vencimiento futuro en 24 meses. El plazo utilizable es `enquiryPeriod.endDate`
-  (consultas y observaciones): 71,1 % de cobertura y vencimientos futuros reales.
+- **El "cierre de ofertas" prácticamente no existe en datos abiertos.**
+  `tenderPeriod.endDate` coincide con el día de publicación en el 95,6 % de los
+  casos, y de los 6.653 restantes **5.229 (79 %) son ANTERIORES a la publicación**
+  — plazos que vencieron meses antes de que el proceso saliera. Tras exigir que sea
+  posterior quedan **1.424 en 24 meses (0,9 %)**. No se puede prometer.
+  El plazo utilizable es `enquiryPeriod.endDate` (consultas y observaciones):
+  107.192 coherentes frente a 1.051 anteriores a la publicación.
 - **`tender.tenderers[]` existe y no se usa**: 9.545 postores en julio (29,9 % de los
   procesos), todos con RUC. Es "quién se presentó", no solo quién ganó.
 - **`/api/v1/suppliers` no admite búsqueda por nombre** (probado con `search`, `name`,

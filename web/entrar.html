@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entrar · SEACE Alertas</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="centrado">
+  <main class="tarjeta-acceso">
+    <div class="marca">🔎 SEACE Alertas</div>
+    <h1>Entra con tu correo</h1>
+    <p class="ayuda">
+      Te enviamos un enlace de acceso. No hay contraseña que recordar.
+    </p>
+
+    <form id="form">
+      <input type="email" id="email" placeholder="tu@estudio.pe" autocomplete="email" required autofocus>
+      <button type="submit" class="btn primario" id="enviar">Enviarme el enlace</button>
+    </form>
+
+    <div id="aviso" class="aviso" hidden></div>
+
+    <p class="pie">
+      El acceso es por invitación. Si tu estudio ya usa SEACE Alertas,
+      pide que te inviten desde la pantalla de alertas.
+    </p>
+  </main>
+
+<script>
+const form = document.getElementById('form');
+const aviso = document.getElementById('aviso');
+const boton = document.getElementById('enviar');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  boton.disabled = true;
+  boton.textContent = 'Enviando…';
+  aviso.hidden = true;
+  try {
+    const res = await fetch('/api/acceso', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: document.getElementById('email').value }),
+    });
+    const j = await res.json();
+    aviso.textContent = j.error ?? j.mensaje;
+    aviso.className = 'aviso ' + (j.error ? 'error' : 'ok');
+    aviso.hidden = false;
+    if (!j.error) form.hidden = true;
+  } catch {
+    aviso.textContent = 'No se pudo conectar con el servidor.';
+    aviso.className = 'aviso error';
+    aviso.hidden = false;
+  } finally {
+    boton.disabled = false;
+    boton.textContent = 'Enviarme el enlace';
+  }
+});
+</script>
+</body>
+</html>

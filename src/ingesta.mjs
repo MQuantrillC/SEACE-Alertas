@@ -111,9 +111,15 @@ function procesoDe(rel, mes) {
     protegido: t.hasTenderInformationProtectedByLaw ? 1 : 0,
     fecha,
     fecha_dia: fecha ? fecha.slice(0, 10) : null,
-    // "Cierre real" solo si el fin de la ventana es posterior a la publicación:
-    // si coinciden, el SEACE aún no publicó el cierre (ver CONTEXT.md §6).
-    cierre_ofertas: tpFin && (fecha ?? '').slice(0, 10) !== tpFin.slice(0, 10) ? tpFin : null,
+    // Cierre de ofertas: solo si es ESTRICTAMENTE POSTERIOR a la publicación.
+    //
+    // No es quisquillosidad. De los 6.653 procesos que traían un `tenderPeriod.endDate`
+    // distinto del día de publicación, 5.229 (el 79 %) lo tenían ANTERIOR — un plazo
+    // que venció meses antes de que el proceso se publicara. Enseñar eso en una
+    // ficha es peor que no enseñar nada. Con este filtro quedan 1.424 en 24 meses:
+    // el 0,9 % de los procesos. La conclusión honesta es que el cierre de ofertas
+    // prácticamente no se publica en datos abiertos (ver API.md §2).
+    cierre_ofertas: tpFin && fecha && tpFin.slice(0, 10) > fecha.slice(0, 10) ? tpFin : null,
     tender_ini: tpIni,
     tender_fin: tpFin,
     enquiry_ini: t.enquiryPeriod?.startDate ?? null,

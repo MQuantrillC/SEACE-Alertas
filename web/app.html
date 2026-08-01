@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEACE Alertas</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="barra">
+  <span class="logo">🔎 SEACE Alertas</span>
+  <nav>
+    <a href="#" class="activo">Buscar</a>
+  </nav>
+  <div class="usuario">
+    <span id="quienSoy"></span>
+    <button id="salir">Salir</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Búsqueda ─────────────────────────────────────────────────────── -->
+  <div class="panel">
+    <div class="campos">
+      <div class="campo">
+        <label for="entidad">Nombre o Sigla de Entidad</label>
+        <div class="autocompletar">
+          <input type="text" id="entidad" placeholder="ESSALUD, Municipalidad de Miraflores…" autocomplete="off">
+          <div class="sugerencias" id="sugEntidad" hidden></div>
+        </div>
+        <div class="fichas" id="fichasEntidad"></div>
+        <div class="pista">Puedes añadir varias. Se buscan todas a la vez.</div>
+      </div>
+
+      <div class="campo">
+        <label for="objeto">Descripción del Objeto</label>
+        <input type="text" id="objeto" placeholder="servicio de limpieza, ambulancia, consultoría…" autocomplete="off">
+        <div class="pista">Busca en la descripción, la nomenclatura y los ítems. Usa "comillas" para una frase exacta.</div>
+      </div>
+    </div>
+
+    <div class="campos" style="margin-top:14px;">
+      <div class="campo">
+        <label for="proveedor">Proveedor o Postor <span style="font-weight:normal;text-transform:none;letter-spacing:0;">(opcional)</span></label>
+        <div class="autocompletar">
+          <input type="text" id="proveedor" placeholder="Razón social o RUC" autocomplete="off">
+          <div class="sugerencias" id="sugProveedor" hidden></div>
+        </div>
+        <div class="pista">Encuentra tanto a quien ganó como a quien solo se presentó.</div>
+      </div>
+      <div class="campo" style="display:flex;align-items:flex-end;gap:8px;">
+        <button class="btn primario" id="buscar" style="flex:1;">Buscar</button>
+        <button class="btn" id="limpiar">Limpiar</button>
+      </div>
+    </div>
+
+    <div class="filtros">
+      <select id="periodo" title="Periodo de publicación">
+        <option value="">Cualquier fecha</option>
+        <option value="hoy">Hoy</option>
+        <option value="7">Últimos 7 días</option>
+        <option value="30" selected>Últimos 30 días</option>
+        <option value="90">Últimos 3 meses</option>
+        <option value="365">Último año</option>
+        <option value="custom">Elegir fechas…</option>
+      </select>
+      <span id="rangoFechas" hidden>
+        <input type="date" id="desde" title="Desde"> <input type="date" id="hasta" title="Hasta">
+      </span>
+      <details class="multi" id="mCategoria"><summary>Categoría</summary><div class="lista"></div></details>
+      <details class="multi" id="mEstado"><summary>Estado</summary><div class="lista"></div></details>
+      <details class="multi" id="mMonto"><summary>Monto</summary><div class="lista"></div></details>
+      <details class="multi" id="mDepartamento"><summary>Departamento</summary><div class="lista"></div></details>
+      <details class="multi" id="mMetodo"><summary>Método</summary><div class="lista"></div></details>
+      <label class="conmutador"><input type="checkbox" id="conAdjudicacion"> Con ganador</label>
+      <label class="conmutador" title="Procesos en los que se presentó un único postor"><input type="checkbox" id="soloUnPostor"> Un solo postor</label>
+    </div>
+  </div>
+
+  <!-- ── Resultados ───────────────────────────────────────────────────── -->
+  <div class="resumen" id="resumen"></div>
+  <div class="panel" id="panelStats" hidden></div>
+  <div id="resultados"></div>
+  <div class="paginacion" id="paginacion"></div>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
