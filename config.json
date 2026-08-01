@@ -1,0 +1,33 @@
+{
+  "_comentario": "Ajusta aquí qué licitaciones entran al digest. Cada entrada puede ser texto plano (subcadena) o una regex escrita como \"/patron/\" — ej: \"/implementaci.n de (una )?(infraestructura|plataforma)/\". Todo se compara sin tildes ni mayúsculas contra descripción + ítems + nomenclatura, así que escribe los patrones sin tildes.",
+
+  "diasHaciaAtras": 2,
+  "maxPaginas": 300,
+
+  "palabrasAlta": [
+    "nube", "cloud", "google", "workspace", "gcp",
+    "datacenter", "centro de datos",
+    "inteligencia artificial", "machine learning", "analitica de datos",
+    "licenciamiento de software", "correo electronico corporativo",
+    "transformacion digital", "gobierno de datos", "big data",
+    "/(migraci.n|modernizaci.n) .{0,40}(nube|cloud|datos|digital)/",
+    "/infraestructura .{0,30}(gestionada|en nube|cloud)/"
+  ],
+
+  "palabrasMedia": [
+    "software", "licencia", "licencias",
+    "ciberseguridad", "seguridad de la informacion", "seguridad informatica",
+    "plataforma digital", "sistema de informacion", "digitalizacion",
+    "infraestructura tecnologica", "equipos informaticos",
+    "mesa de ayuda", "soporte tecnico", "microsoft", "office 365",
+    "erp", "crm", "salesforce", "interoperabilidad"
+  ],
+
+  "palabrasExcluir": [
+    "aire acondicionado", "camaras de video", "camara de video",
+    "cableado", "impresora", "fotocopiadora", "toner", "tinta"
+  ],
+
+  "destinatarios": ["marco.quantrill@xertica.com"],
+  "asuntoPrefijo": "🏛️ SEACE · Licitaciones TI"
+}

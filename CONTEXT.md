@@ -1,0 +1,206 @@
+# CONTEXT.md — seace-alertas
+
+> Documento vivo de contexto del proyecto. **Actualízalo al final de cada sesión de
+> trabajo** (ver [Cómo mantener este doc](#cómo-mantener-este-doc) al final).
+> Última actualización: **2026-08-01**.
+
+---
+
+## 1. Qué es
+
+Herramienta local (Node, sin build, sin framework) para **vigilar licitaciones
+públicas del SEACE (Perú)** y detectar oportunidades comerciales para Xertica.
+
+Tres productos en un mismo repo, todos sobre la misma fuente de datos:
+
+| Producto | Comando | Qué es |
+|---|---|---|
+| **Digest** | `npm run digest` | Script one-shot: baja convocatorias de las últimas 48 h, filtra por keywords TI, escribe `out/digest-YYYY-MM-DD.html`. Con `--send` lo manda por correo. |
+| **Buscador** | `npm run web` | Servidor HTTP local (`http://localhost:4321`) con UI de búsqueda/filtros/estadísticas sobre meses completos de datos. **Es el único proceso que queda corriendo.** |
+| **Runner de alertas** | `npm run alertas` | Script one-shot pensado para el Programador de tareas: revisa las alertas y seguimientos creados en el buscador y envía correos si hay novedades. |
+
+No depende de ningún otro proyecto (en particular, **no toca el Account Plan**).
+
+## 2. Fuente de datos
+
+API abierta **OCDS del OECE** (ex-OSCE) — datos oficiales del SEACE, **sin API key
+ni login**: `https://contratacionesabiertas.oece.gob.pe`
+
+Se usan tres vías distintas:
+
+1. **`/api/v1/releases`** (paginado 20×) → lo usa el **digest**. Ordenado por fecha
+   del *lote* OCDS, no de la convocatoria (ver Gotchas).
+2. **Archivos mensuales** `/api/v1/file/seace_v3/json/YYYY/MM/` → zip con TODOS los
+   procesos del mes como `compiledRelease` (incluye adjudicaciones y proveedores).
+   Lo usan el **buscador** y las **alertas**. Cacheados en `out/cache/`.
+3. **`buyerProcesses` / `buyerContracts` + `static/buyers.json`** → historial de
+   compras por entidad y autocompletado (~3.3k entidades).
+
+## 3. Mapa del código
+
+```
+src/
+  index.mjs        Entry point del digest (fetchRecent → filtrar → renderEmail → out/ → [--send])
+  seace.mjs        Cliente API /releases + normalize(): aplana un release OCDS al modelo interno
+  bulk.mjs         Descarga/cachea los zips mensuales → procesos normalizados (loadRecentMonths)
+  digest.mjs       fold(), toMatcher() y filtrarRelevantes() — scoring por keywords de config.json
+  search.mjs       aplicarFiltros() compartido por buscador y alertas + MONTO_RANGOS + mesesParaCubrir()
+  emailHtml.mjs    renderEmail(): HTML del correo/digest (tarjetas con etapas, bases, enlaces)
+  send.mjs         enviar(): SMTP vía nodemailer; no-op silencioso si faltan SMTP_USER/PASS
+  server.mjs       Servidor HTTP del buscador + toda la API (ver tabla abajo)
+  alertas.mjs      Runner: alertas por filtros + seguimientos por proceso
+  alertasStore.mjs Persistencia JSON de alertas.json y seguimientos.json
+web/
+  index.html       UI del buscador (HTML + CSS + JS vanilla en un archivo, ~24 KB)
+  entidad.html     Vista de historial de una entidad
+```
+
+Dependencias: solo **`adm-zip`** (descomprimir los meses) y **`nodemailer`** (SMTP).
+`"type": "module"`, Node ≥ 18 (aquí corre v24).
+
+### Endpoints de `server.mjs`
+
+| Ruta | Qué devuelve |
+|---|---|
+| `GET /` · `GET /entidad` | Las dos páginas HTML |
+| `GET /api/buscar` | Resultados filtrados (tope 150, con flag `truncado`) |
+| `GET /api/stats` | Top entidades/proveedores + distribución por categoría, departamento y mes, sobre el conjunto YA filtrado |
+| `GET /api/entidades` | Catálogo `buyers.json` (cache 24 h en memoria) |
+| `GET /api/entidad?id=|nombre=` | Historial de compras de una entidad |
+| `GET/POST/DELETE /api/alertas` | CRUD de alertas por filtros |
+| `GET/POST/DELETE /api/seguimientos` | CRUD de seguimientos por proceso (🔔) |
+| `GET /api/ficha?id=` | Inspector de la ficha del SEACE (diagnóstico, ver Gotchas) |
+
+### Modelo interno de un proceso (`normalize()` en `seace.mjs`)
+
+`ocid`, `fecha` (publicación real = `tender.datePublished`), `nomenclatura`,
+`descripcion`, `items[]`, `entidad`, `categoria`, `metodo`, `monto`, `moneda`,
+`cierreOfertas`, `etapas[]`, `basesUrl`, `departamento`, `estados[]`,
+`proveedores[]`, `adjudicaciones[]` (monto real por award).
+
+## 4. Cómo correrlo
+
+Node ≥ 18 (verificado con v24.18.0). Desde la raíz del proyecto:
+
+```bash
+npm install
+```
+
+**Buscador — este es "el dev server":**
+
+```bash
+npm run web
+```
+
+→ `http://localhost:4321`. Puerto configurable con `PORT`. Se detiene con `Ctrl+C`.
+La **primera búsqueda de cada rango de meses descarga el zip mensual** (tarda; el mes
+de julio son ~44 MB ya descomprimido). Después es instantáneo: cache en disco
+(`out/cache/`) + cache en memoria de 30 min por número de meses.
+No hay hot-reload — tras editar `src/*.mjs` hay que reiniciar el proceso; los cambios
+en `web/index.html` solo necesitan recargar el navegador (se lee del disco en cada request).
+
+**Digest:**
+
+```bash
+npm run digest
+```
+
+Genera `out/digest-YYYY-MM-DD.html` y lo lista en consola. Para enviarlo por correo:
+
+```bash
+npm run digest:send
+```
+
+**Alertas (lo que se programa en el Task Scheduler):**
+
+```bash
+npm run alertas
+```
+
+### Correo
+
+Copia `.env.example` → `.env` y completa `SMTP_HOST/PORT/USER/PASS`. Con Google
+Workspace hay que usar una *contraseña de aplicación*. Los scripts ya cargan `.env`
+solos (`node --env-file-if-exists=.env`) — no hace falta exportar nada.
+Sin `SMTP_USER`/`SMTP_PASS` el envío se omite con un aviso; el digest igual se genera.
+
+## 5. Configuración y estado
+
+| Archivo | Versionado | Qué guarda |
+|---|---|---|
+| `config.json` | sí | `diasHaciaAtras` (2), `maxPaginas` (300), `palabrasAlta/Media/Excluir`, `destinatarios`, `asuntoPrefijo` |
+| `.env` | **no** (gitignored) | Credenciales SMTP |
+| `alertas.json` | **no** | Alertas por filtros. Cada una: `emails[]`, `nombre`, `filtros`, `ultimaFecha` (corte) |
+| `seguimientos.json` | **no** | Procesos seguidos con 🔔 + snapshot de estado |
+| `out/cache/*.json` | **no** | Meses descargados. **Pesan mucho** (~220 MB hoy: mayo 108 MB, junio 67 MB, julio 44 MB). Borrables sin riesgo. |
+| `out/digest-*.html`, `out/alertas.log` | **no** | Salidas |
+
+**Sintaxis de keywords** (las tres listas de `config.json`): texto plano = subcadena,
+o `"/regex/"` entre barras. Todo se compara contra texto **plegado** (minúsculas, sin
+tildes) → escribe los patrones sin tildes (`migraci.n`, no `migración`). Una regex
+inválida se ignora con un aviso, no rompe nada.
+Scoring: alta = 10 pts, media = 1 pt; las de exclusión descartan el proceso **salvo**
+que también haya señal alta.
+
+## 6. Gotchas verificados (no re-descubrir)
+
+- **`release.date` ≠ fecha de convocatoria.** `release.date` es la hora del lote de
+  conversión OCDS (igual para cientos de procesos). La fecha real es
+  `tender.datePublished`. Por eso `fetchRecent()` pagina mientras el *lote* esté en
+  rango pero filtra por la fecha real de cada proceso.
+- **`tenderPeriod` es la ventana del proceso** (convocatoria → presentación de
+  ofertas), *nunca* la duración del contrato. Si inicio y fin caen el mismo día, el
+  SEACE solo publicó la convocatoria — se etiqueta distinto para no inducir a error.
+- **Solo hay dos periodos en datos abiertos** (verificado escaneando 300 procesos):
+  `tenderPeriod` y a veces `enquiryPeriod`. El cronograma etapa-por-etapa completo
+  solo está en las bases (PDF) y en la ficha del buscador SEACE.
+- **La ficha del SEACE no es deep-linkeable.** Verificado con `/api/ficha`: fuera de
+  una sesión del buscador devuelve solo el esqueleto HTML, sin datos. No se puede
+  automatizar por ese camino.
+- **Los montos referenciales suelen venir en 0** (protegidos hasta la buena pro).
+  De ahí la banda de filtro "Sin monto publicado" (`s0`).
+- **Estadísticas de proveedores usan el monto del award**, no el referencial del
+  proceso: un proceso multi-award (ej. medicinas) se reparte entre varios ganadores.
+- **`buyerID`, no `buyer`.** En `buyerProcesses`/`buyerContracts` el parámetro
+  correcto es `buyerID`; con `buyer` la API ignora el filtro y devuelve todo el
+  dataset. Los contratos no aceptan orden — se ordenan en local sobre una muestra de 50.
+- **Frescura:** el OECE regenera el archivo mensual ~1 vez al día, así que el filtro
+  "Hoy" puede tardar horas en poblarse. Lo de ayer siempre está.
+- **El corte de una alerta avanza a la publicación más reciente enviada**, no a
+  "ahora", para no saltarse el hueco si el bulk se regenera con retraso.
+- Tope de 50 procesos por correo de alerta (una alerta sin filtros matchea cientos).
+
+## 7. Estado actual (2026-08-01)
+
+- Funcionando end-to-end: digest, buscador (con estadísticas, historial por entidad,
+  autocompletado) y runner de alertas.
+- `alertas.json` tiene **2 alertas de prueba** ("Prueba" con `q=essalud` y "Prueba 2"
+  sin filtros), ambas a marco.quantrill@xertica.com. Sin seguimientos.
+- `out/alertas.log` muestra corridas hasta el **2026-07-31**, sin novedades → el
+  runner ya está programado y corriendo (Task Scheduler).
+- Último código tocado: `src/seace.mjs`, `src/server.mjs`, `web/index.html` (2026-07-11).
+- **El proyecto no está bajo control de versiones** (no hay `.git`), aunque sí existe
+  un `.gitignore` preparado. Pendiente: `git init` si se quiere historial/backup.
+
+## 8. Ideas / pendientes
+
+- Automatizar el digest en Cloud Run + Cloud Scheduler (hoy solo Task Scheduler local).
+- Limpiar las alertas de prueba y crear las reales del equipo comercial.
+- Purga/rotación del cache de `out/cache/` (crece ~50-100 MB por mes consultado).
+- `git init` + primer commit.
+
+---
+
+## Cómo mantener este doc
+
+Al terminar una sesión de trabajo, actualiza:
+
+1. La **fecha** de la cabecera.
+2. **§3 Mapa del código** si se añadió/renombró un archivo o endpoint.
+3. **§6 Gotchas** con cualquier comportamiento raro de la API que se haya verificado
+   (el objetivo es no volver a investigarlo nunca).
+4. **§7 Estado actual** — qué quedó funcionando y qué quedó a medias.
+5. **§8 Pendientes** — mueve a §7 lo que se completó.
+
+Mantén `README.md` como el "cómo se usa" para una persona nueva, y este archivo como
+el "cómo está y por qué" para retomar el trabajo.

@@ -1,0 +1,21 @@
+{
+  "name": "seace-alertas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Digest diario de licitaciones públicas del SEACE (Perú) relevantes para Xertica — API abierta OCDS del OECE, sin credenciales.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "digest": "node src/index.mjs",
+    "digest:send": "node --env-file-if-exists=.env src/index.mjs --send",
+    "web": "node --env-file-if-exists=.env src/server.mjs",
+    "alertas": "node --env-file-if-exists=.env src/alertas.mjs"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "nodemailer": "^6.9.16"
+  }
+}
