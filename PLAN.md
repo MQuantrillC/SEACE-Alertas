@@ -1,372 +1,381 @@
 # PLAN.md — De herramienta interna a producto para estudios de abogados
 
-> Estado: **propuesta, sin implementar**. Fecha: 2026-08-01.
-> Complementa [CONTEXT.md](CONTEXT.md) (qué existe hoy). Este doc es el **hacia dónde**.
+> Estado: **propuesta, sin implementar**. Actualizado: 2026-08-01.
+> [CONTEXT.md](CONTEXT.md) = cómo está hoy · [API.md](API.md) = qué da la fuente ·
+> este doc = **hacia dónde va y en qué orden**.
 
 ---
 
 ## 0. El cambio de público
 
 Hoy la app está construida para **Xertica buscando oportunidades TI**: keywords de
-`config.json`, scoring de afinidad, filtro "Solo TI", digest diario de nube/datacenter.
+`config.json`, scoring de afinidad, filtro "Solo TI".
 
-El nuevo objetivo es un **estudio de abogados que monitorea el SEACE**: no quiere
-"lo relevante para mí según unas keywords", quiere **exactamente lo que pidió**
-(esta entidad, este objeto) y **que le avise cuando aparezca algo nuevo**.
-
-Eso cambia tres cosas de fondo:
+El objetivo es un **estudio de abogados que monitorea el SEACE**: no quiere "lo
+relevante según unas keywords", quiere **exactamente lo que pidió** y **que le avisen
+cuando aparezca**.
 
 | | Hoy (Xertica TI) | Objetivo (estudio) |
 |---|---|---|
-| Búsqueda | 1 campo catch-all + scoring por afinidad | 2 campos explícitos, resultado literal y predecible |
-| Relevancia | la decide `config.json` | la decide el usuario, y queda guardada |
-| Alertas | 1 cadencia global (lo que diga el Task Scheduler) | cadencia **por alerta**, elegida por el usuario |
+| Búsqueda | 1 campo catch-all + scoring | 2 campos explícitos, resultado literal |
+| Relevancia | la decide `config.json` | la decide el usuario y queda guardada |
+| Alertas | 1 cadencia global | cadencia **por alerta**, elegida por el usuario |
+| Usuarios | ninguno (el correo es un campo de texto) | **cuentas reales con login** |
 
-Consecuencia directa: **se quita "Solo TI"** (como pediste) y con él, del buscador,
-todo el aparato de scoring. `filtrarRelevantes()` no se borra — sigue siendo el motor
-del digest, que queda como un producto aparte de Xertica.
-
----
-
-## 1. Hallazgos de la revisión (verificados con datos de julio 2026)
-
-Antes de proponer features, tres cosas que **están rotas o engañan hoy**. Todas
-verificadas contra `out/cache/2026-07.json` (5.576 procesos).
-
-### 1.1 🔴 El autocompletado de entidad devuelve CERO resultados para EsSalud
-
-El nombre en el catálogo oficial (`buyers.json`) y el nombre en los datos mensuales
-**no coinciden byte a byte**:
-
-```
-catálogo : "SEGURO SOCIAL DE SALUD"      ← lo que ofrece el autocompletado
-datos    : "SEGURO SOCIAL DE  SALUD"     ← doble espacio
-```
-
-`fold()` normaliza tildes y mayúsculas pero **no colapsa espacios**, así que el
-filtro `fold(p.entidad).includes(fold(entidad))` falla. Eliges EsSalud en el
-desplegable → 0 resultados, sin ningún error que lo explique.
-
-Alcance en julio: **19 entidades / 180 procesos** con este problema. Colapsar
-espacios (`.replace(/\s+/g,' ')`) lo arregla al **100 %** (1372/1372 entidades).
-Pero una de esas 19 es EsSalud, el mayor comprador de salud del país.
-
-### 1.2 🔴 "ESSALUD" como texto no encuentra a EsSalud como entidad
-
-Ninguna sigla está en el catálogo: `ESSALUD`, `MINSA`, `MINEDU`, `PETROPERÚ`,
-`INDECOPI`, `OSINERGMIN` → **0 coincidencias** en las 3.316 entidades.
-Los nombres oficiales son "SEGURO SOCIAL DE SALUD", "MINISTERIO DE SALUD", etc.
-
-O sea: el campo que pides — *"Nombre **o Sigla** de Entidad"* — **hoy no puede
-funcionar con siglas**, porque el dato no las trae. Hay que construir un
-**diccionario de siglas** nuestro (ver §2.1).
-
-> Nota práctica: tu alerta de prueba `q = "essalud"` lleva semanas devolviendo
-> "sin novedades". No es que no haya procesos — hay **119 en julio**. Es que
-> matchean por el texto de la descripción, no por entidad, y el corte de fecha ya
-> había pasado. Los dos bugs de arriba explican el comportamiento.
-
-### 1.3 🟠 El filtro "Estado" no ofrece los estados que más le importan a un abogado
-
-La lista está hardcodeada en `web/index.html` con 8 estados. Los datos reales de
-julio traen 12. Faltan justo los **jurídicamente interesantes**:
-
-```
-en la UI  : CONVOCADO ADJUDICADO CONSENTIDO CONTRATADO DESIERTO NULO APELADO CANCELADO
-faltantes : SUSPENDIDO · RETROTRAIDO_POR_RESOLUCION · DEJAR_SIN_EFECTO_ADJUDICACION
-            CONTRATACION_DIRECTA · PENDIENTE_DE_REGISTRO_DE_EFECTO
-```
-
-Son pocos procesos (1-60 al mes) pero son **exactamente** el tipo de evento que un
-estudio quiere cazar: impugnaciones, suspensiones, retrotracciones. La lista debe
-salir de los datos, no de una constante.
-
-### 1.4 🟠 El filtro "Hoy" se rompe después de las 19:00 (hora Lima)
-
-`iso()` en el frontend hace `toISOString()` → UTC. A las 20:00 de Lima ya es el día
-siguiente en UTC, así que "Hoy" pide `desde = mañana` y devuelve 0 resultados.
-Afecta también a "Esta semana" y "Este mes" en su día de corte.
-
-### 1.5 🟡 Nadie puede volver a entrar a sus alertas sin recordar el correo exacto
-
-El correo es la identidad, no se guarda en el navegador, y `GET /api/alertas?email=`
-lista las alertas de cualquiera que sepa el correo. Para uso interno pasa; para un
-estudio con varios abogados, no.
+Se quita **"Solo TI"** y también **el regex** del campo de búsqueda (decidido
+2026-08-01). `filtrarRelevantes()` sobrevive solo como motor del digest de Xertica.
 
 ---
 
-## 2. Fase 1 — Lo que pediste
+## 1. Bugs verificados (arreglar antes que nada)
 
-### 2.1 Dos campos de búsqueda separados
+Todo comprobado contra `out/cache/2026-07.json` (5.576 procesos). Detalle en
+[CONTEXT.md](CONTEXT.md) §6.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Nombre o Sigla de Entidad          Descripción del Objeto     │
-│  ┌──────────────────────────┐       ┌────────────────────────┐ │
-│  │ ESSALUD              ▾   │       │ servicio de limpieza   │ │
-│  └──────────────────────────┘       └────────────────────────┘ │
-│   ╳ Seguro Social de Salud                                     │
-│   ╳ Ministerio de Salud            Cualquiera de estas palabras│
-│                                     ○ Todas  ● Cualquiera      │
-└────────────────────────────────────────────────────────────────┘
-```
+| # | Bug | Impacto | Arreglo |
+|---|---|---|---|
+| 1 | Catálogo dice `"SEGURO SOCIAL DE SALUD"`, datos dicen `"SEGURO SOCIAL DE  SALUD"` (doble espacio). `fold()` no colapsa espacios | Elegir EsSalud en el autocompletado da **0 resultados**, sin error. 19 entidades / 180 procesos en julio | **Filtrar por `buyer.id`**, que coincide 5.576/5.576 (ver §3.1) |
+| 2 | Las siglas no existen en el dato: `ESSALUD`, `MINSA`, `MINEDU`, `PETROPERU`, `INDECOPI` → 0 coincidencias en 3.316 entidades | El campo "Nombre **o Sigla**" no puede funcionar hoy | Diccionario `siglas.json` propio (§3.1) |
+| 3 | La UI ofrece 8 estados; los datos traen 12 | No se puede filtrar `SUSPENDIDO`, `RETROTRAIDO_POR_RESOLUCION`, `DEJAR_SIN_EFECTO_ADJUDICACION` — los de litigio | Lista derivada de los datos |
+| 4 | `iso()` usa `toISOString()` (UTC) | Después de las 19:00 de Lima, "Hoy" pide mañana → 0 resultados | Fechas en `America/Lima` |
+| 5 | Las estadísticas suman `amount` sin mirar la moneda | 93 procesos de julio en USD/EUR/GBP se suman como si fueran soles | Usar `amount_PEN`, que está al 100 % |
 
-Reglas:
+---
 
-- **Los dos son opcionales e independientes.** Solo entidad → todo lo de esa
-  entidad. Solo objeto → ese objeto en todo el Estado. Los dos → intersección.
-  Ninguno → todo lo publicado en el periodo.
-- **Entidad** = typeahead sobre el catálogo oficial, **multi-selección con chips**
-  (un estudio vigila un set fijo de entidades, no una). Varias entidades = OR.
-- **Sigla**: diccionario propio `siglas.json` (`ESSALUD → SEGURO SOCIAL DE SALUD`,
-  `MINSA → MINISTERIO DE SALUD`, …). Arrancar con las ~150 entidades más activas
-  (cubren la mayoría del volumen) y ampliar. El typeahead busca en nombre **y** en
-  sigla y siempre muestra el nombre oficial, para que el usuario vea qué eligió.
-- **Descripción del Objeto** busca solo en `descripcion + nomenclatura + items`.
-  **No** en entidad ni en proveedores — esos tienen su propio campo. Es un cambio
-  respecto del `q` actual, pero es lo que hace el resultado predecible.
-- Se cae el `/regex/` del campo visible. Quien lo necesite, que use "Búsqueda
-  avanzada" (plegable). Un abogado no debe toparse con sintaxis regex.
-- Se añade un **tercer campo opcional "Proveedor / Postor"** — hoy esa capacidad
-  existe escondida dentro de `q` y es demasiado valiosa para perderla: es el
-  "¿qué ha ganado la competencia / mi cliente?".
+## 2. Lo que la fuente da y no estamos usando
 
-**Prerrequisito técnico:** arreglar 1.1 (colapsar espacios) o el multi-select de
-entidades nace roto.
+Resumen; el detalle con cobertura está en [API.md](API.md).
 
-### 2.2 Frecuencia por alerta
-
-```
-┌─ Nueva alerta ────────────────────────────────────────────┐
-│ Nombre     [ EsSalud · servicios de limpieza            ] │
-│ Enviar a   [ maria@estudio.pe ] [ jlopez@estudio.pe ] [+] │
-│                                                           │
-│ ¿Cada cuánto?                                             │
-│   ○ Apenas se publique      (revisa cada hora, 7–20 h)    │
-│   ● Una vez al día          [ 08:00 ▾ ]                   │
-│   ○ Dos veces al día        [ 08:00 ▾ ] [ 17:00 ▾ ]       │
-│   ○ Semanal                 [ Lunes ▾ ] [ 08:00 ▾ ]       │
-│                                                           │
-│ ☐ Avísame también cuando no haya novedades                │
-│                                                           │
-│ Filtros: Seguro Social de Salud · "limpieza" · Lima       │
-│                                     [ Cancelar ] [ Crear ]│
-└───────────────────────────────────────────────────────────┘
-```
-
-Modelo de datos (extiende `alertas.json`, retrocompatible):
-
-```json
-{
-  "frecuencia": { "tipo": "diaria", "horas": ["08:00"], "diaSemana": null, "tz": "America/Lima" },
-  "proximoEnvio": "2026-08-02T13:00:00Z",
-  "ultimoEnvio":  "2026-08-01T13:00:00Z",
-  "pausada": false,
-  "enviarVacios": false
-}
-```
-
-Arquitectura del runner — **el scheduler se vuelve tonto y la app inteligente**:
-
-- Task Scheduler / Cloud Scheduler invoca `npm run alertas` **cada hora**, siempre.
-- El runner carga los procesos **una sola vez** por invocación y luego procesa
-  **solo las alertas cuyo `proximoEnvio <= ahora`**. Tras enviar, recalcula
-  `proximoEnvio` según la frecuencia. Añadir cadencias nuevas no toca el scheduler.
-- **Horario hábil**: nunca enviar entre 20:00 y 07:00 (Lima). Se acumula y sale a
-  las 07:00.
-- El corte anti-duplicados (`ultimaFecha`) ya funciona bien y no cambia.
-
-**Límite honesto de frescura:** los archivos mensuales se regeneran **~1 vez al
-día**. "Apenas se publique" sobre datos mensuales sería mentira. Para que la opción
-horaria signifique algo, el runner debe hacer un **híbrido**: bulk mensual (base) +
-`fetchRecent()` sobre `/releases` (que sí se actualiza durante el día) para las
-últimas 48 h, fusionado por `ocid`. Una fetch por invocación, no por alerta.
-
-### 2.3 Arreglos que van en el mismo viaje
-
-| # | Arreglo | Por qué ahora |
+| Dato | Hoy | Qué habilita |
 |---|---|---|
-| 1 | Colapsar espacios en `fold()` | Sin esto el campo de entidad nace roto (§1.1) |
-| 2 | Estados desde los datos, no hardcodeados | Habilita el caso de uso legal (§1.3) |
-| 3 | Fechas en hora de Lima, no UTC | "Hoy" funciona de noche (§1.4) |
-| 4 | Recordar correo en `localStorage` | Deja de retipear en cada visita (§1.5) |
-| 5 | Filtros en la URL | Enlaces compartibles entre abogados del estudio |
-| 6 | Botón **"Probar ahora"** por alerta | Sin él nadie confía en que la alerta funciona |
-| 7 | Quitar "Solo TI" del buscador | Pedido explícito |
+| **`tender.tenderers[]`** — 9.545 postores/mes, 100 % con RUC, 5.388 distintos | ignorado | **Quién se presentó**, no solo quién ganó. El dato más valioso desaprovechado |
+| **`supplierProcesses` / `supplierContracts`** | ignorado | Historial completo de cualquier competidor por RUC |
+| **`buyer.id`** (coincide 100 % con el catálogo) | ignorado | Arregla el bug 1 de raíz |
+| **RUC de todos los actores** | ignorado | Identificador exacto; los abogados piensan en RUC |
+| **Provincia (189) y distrito (775)** | solo departamento | Geografía fina |
+| **CUBSO / UNSPSC** (81,4 %) | ignorado | Rubro sin keywords |
+| **4 tipos de documento** | 1 de 4 | Pliego de absolución, acta de buena pro, informe de desierto |
+| **`amount_PEN`** | ignorado | Arregla el bug 5 |
+| **`numberOfTenderers`** | ignorado | Nivel de competencia; detectar postor único |
 
-El #6 es más importante de lo que parece: hoy creas una alerta y no pasa **nada**
-visible hasta mañana. "Probar ahora" manda el correo con lo que habría enviado —
-convierte un acto de fe en una confirmación inmediata.
-
----
-
-## 3. El panel de estadísticas
-
-Te gusta, y con razón: es lo que diferencia esto de la búsqueda del SEACE. Pero hoy
-**mide mal**.
-
-### 3.1 El problema de fondo: solo el 43,6 % de los procesos publica su monto
-
-De 5.576 procesos de julio, **2.430 (43,6 %)** traen monto referencial > 0 — el resto
-lo protege el SEACE hasta la buena pro. Solo **1.332 (23,9 %)** tienen adjudicación.
-
-Y **los cinco gráficos ordenan y dimensionan las barras por monto.** O sea:
-
-- "Top entidades por monto referencial" no es *quién compra más*, es *quién compra
-  más **entre los que publicaron su monto***. Una entidad enorme que protege sus
-  montos no aparece.
-- "Por mes" ordena cronológicamente pero la barra es monto: un mes con muchos
-  procesos y montos protegidos se ve **vacío**. Es el gráfico más engañoso de los cinco.
-- "Por categoría" y "Por departamento", igual.
-
-El `departamento` sí está en el **100 %** de los procesos, y el conteo de procesos
-también. Son las métricas confiables.
-
-### 3.2 El arreglo: un toggle
-
-```
-┌─ 📊 Estadísticas ─────────── Medir por: [ Nº de procesos ] [ Monto S/ ] ─┐
-│                                                                          │
-│  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐                          │
-│  │ 5.576  │  │ 1.372  │  │ 43,6 % │  │ 1.332  │                          │
-│  │procesos│  │entidades│ │publican│  │adjudi- │                          │
-│  │        │  │        │  │ monto  │  │ cados  │                          │
-│  └────────┘  └────────┘  └────────┘  └────────┘                          │
-│                                                                          │
-│  TOP ENTIDADES                                                           │
-│  Seguro Social de Salud   ████████████████████  119 proc.   ← clicable   │
-│  Municipalidad de Lima    ██████████            62 proc.                 │
-│                                                                          │
-│  EVOLUCIÓN MENSUAL          ╱╲                                           │
-│                          ╱─╯  ╰──╮      (línea, no barras)               │
-│                                                                          │
-│  Calculado sobre los 5.576 procesos que cumplen tus filtros              │
-│  (no solo los 150 mostrados arriba).                                     │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-Cambios concretos, por orden de valor:
-
-1. **Toggle procesos / monto**, con "Nº de procesos" por defecto. Un cambio, y los
-   cinco gráficos pasan de engañosos a confiables.
-2. **Fila de KPIs arriba**, con el % de cobertura de monto **a la vista**. Que el
-   usuario sepa sobre qué está mirando sin leer letra chica.
-3. **Barras clicables** → aplican ese filtro a la búsqueda. Ver "Municipalidad de
-   Lima: 62" e ir a esos 62 en un clic es la mitad del valor del panel.
-4. **"Por mes" como línea**, no barras — es una serie temporal.
-5. **Departamento: top 10 + "otros"**, no 26 barras. O un mapa del Perú.
-6. **Nota al pie en "Top proveedores"**: cuando un award tiene varios proveedores,
-   el monto se reparte en partes iguales (es una aproximación, no el dato real).
-7. Etiqueta explícita de que las estadísticas se calculan sobre **todo** el conjunto
-   filtrado, no sobre los 150 resultados visibles. Hoy es correcto pero nadie lo sabe.
-
-### 3.3 Un widget nuevo: **Próximos cierres**
-
-Lo más accionable para un estudio y hoy no existe en ninguna pantalla:
-
-```
-⏳ CIERRAN ESTA SEMANA (de tus entidades vigiladas)
-   mié 06 ago · Seguro Social de Salud · Adquisición de …    [🔔] [ver]
-   jue 07 ago · Municipalidad de Miraflores · Servicio de …  [🔔] [ver]
-```
-
-El dato ya está (`cierreOfertas`), solo hay que ordenarlo y presentarlo. Perder un
-plazo es el peor error posible en este negocio; que la app lo empuje a la primera
-pantalla es un argumento de venta por sí solo.
+Y lo que **no** existe en la API y por tanto **no se puede prometer**: Normativa
+Aplicable (Ley 32069/30225), Causal de contratación directa, Tipo de Compra, Derecho
+de Participación y el **cronograma completo etapa por etapa**. Todo eso vive solo en
+la ficha, que no admite enlace directo. Ver [API.md](API.md) §5.
 
 ---
 
-## 4. Fase 2 — Lo que un estudio va a pedir en la primera semana
+## 3. Diseño de la búsqueda
 
-| Feature | Por qué |
+### 3.1 Los dos campos
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Nombre o Sigla de Entidad            Descripción del Objeto     │
+│  ┌────────────────────────────┐       ┌────────────────────────┐ │
+│  │ essalud                 ▾  │       │ servicio de limpieza   │ │
+│  ├────────────────────────────┤       └────────────────────────┘ │
+│  │ ESSALUD                    │                                  │
+│  │ Seguro Social de Salud     │       Proveedor / Postor (opc.)  │
+│  │ 119 procesos · Lima        │       ┌────────────────────────┐ │
+│  └────────────────────────────┘       │ RUC o razón social     │ │
+│   ╳ Seguro Social de Salud            └────────────────────────┘ │
+│   ╳ Ministerio de Salud                                          │
+│   📁 Cartera: Sector Salud (12)                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- **Los dos campos son opcionales e independientes.** Solo uno, el otro, los dos, o
+  ninguno (= todo lo publicado en el periodo).
+- **Entidad**: multi-selección con chips, resuelta a **`buyer.id`**, no a texto. El
+  desplegable muestra nombre oficial + nº de procesos + departamento, y acepta
+  **sigla** vía `siglas.json`. Varias entidades = OR.
+- **Descripción del Objeto**: busca en `descripcion + nomenclatura + items`. **No** en
+  entidad ni en proveedores — cada cosa tiene su campo. Es lo que hace el resultado
+  predecible.
+- **Tercer campo "Proveedor / Postor"**: por RUC o razón social, y busca en
+  **adjudicados Y postores** (§2). Hoy esta capacidad existe escondida dentro de `q`.
+- **Sin regex** en ninguna parte de la UI.
+
+### 3.2 Carteras (grupos de entidades) — sí, buena idea
+
+Un estudio vigila conjuntos estables: *"Municipalidades de Lima"*, *"Sector Salud"*,
+*"Entidades del cliente Fulano"*. Una **cartera** es una lista guardada de
+`buyer.id`s, reutilizable en cualquier búsqueda o alerta.
+
+Vale la pena porque:
+- Se define una vez y se usa en 10 alertas; cambiarla actualiza las 10.
+- Es la unidad natural de organización por cliente del estudio.
+- Técnicamente es trivial: una tabla de `(cartera_id, entidad_id)`.
+
+Carteras precargadas útiles desde el día uno: *Ministerios*, *Gobiernos Regionales*,
+*Municipalidades provinciales*, *Sector Salud*, *EPS de saneamiento*. Se derivan del
+catálogo por patrón de nombre.
+
+---
+
+## 4. Cuentas, login e invitaciones
+
+Hoy el correo es un campo de texto sin verificar: cualquiera puede suscribir a
+cualquiera, y `GET /api/alertas?email=` lista y borra las alertas de quien sea.
+
+### 4.1 Login por enlace mágico (passwordless)
+
+Es la opción correcta aquí, y no es por moda:
+
+- El correo **ya es** la identidad del producto (las alertas llegan ahí).
+- Cero contraseñas que gestionar, resetear o filtrar — importante en un estudio que
+  no tiene equipo de TI.
+- **El propio login verifica el correo**, así que resuelve gratis el problema de las
+  suscripciones no consentidas.
+
+```
+1. El usuario escribe su correo  →  2. Recibe un enlace con token (15 min, un solo uso)
+3. Hace clic  →  4. Sesión en cookie httpOnly, 30 días
+```
+
+Ya hay SMTP funcionando (`src/send.mjs`), así que no hay infraestructura nueva.
+
+### 4.2 Invitar a otro usuario a una alerta — sí, con aceptación
+
+Tu intuición es correcta: **nadie debe recibir correos que no pidió.**
+
+```
+María crea "EsSalud · limpieza" y añade a jlopez@estudio.pe
+        ↓
+jlopez recibe: "María te invitó a la alerta X"  [Aceptar] [Rechazar]
+        ↓
+Hasta que acepte:  estado = pendiente  → NO se le envía nada
+Al aceptar:        estado = aceptada   → entra en el reparto
+Cada correo lleva  [Darme de baja de esta alerta]
+```
+
+Es la **misma maquinaria que el login**: un token de un solo uso enviado por correo.
+Se diseña una vez y sirve para las dos cosas. La invitación caduca a los 7 días.
+
+Roles por alerta: **propietario** (edita filtros, frecuencia, invita, borra) y
+**suscriptor** (recibe y puede darse de baja). Suficiente; no hace falta más.
+
+### 4.3 Estudio (tenant)
+
+Aunque se empiece con un solo estudio piloto, el esquema debe llevar `estudio_id`
+desde el día uno — añadirlo después obliga a migrar todo. Permite que las carteras y
+las búsquedas guardadas se compartan entre los abogados del estudio.
+
+---
+
+## 5. Cómo organizar los datos
+
+**Dos bases separadas.** Es la decisión de organización más importante:
+
+```
+datos.db     ← reconstruible desde el OECE. Si se corrompe, se re-ingesta y ya.
+cuentas.db   ← irreemplazable. Es lo único que hay que respaldar.
+```
+
+### 5.1 `datos.db` — ingesta del bulk
+
+```sql
+entidades(id PK,            -- 'PE-CONSUCODE-1191'  ⭐ clave real
+          nombre, ruc, departamento, provincia, distrito,
+          direccion, telefono, web, n_procesos)
+
+procesos(ocid PK, tender_id, nomenclatura, descripcion,
+         entidad_id → entidades, categoria, metodo,
+         monto, moneda, monto_pen,          -- ⭐ monto_pen para estadísticas
+         protegido_por_ley, fecha_publicacion, cierre_ofertas,
+         tender_ini, tender_fin, enquiry_ini, enquiry_fin,
+         estado, n_postores, proyecto, proyecto_id)
+
+items(id PK, ocid →, posicion, descripcion, cantidad, unidad,
+      monto, cubso_id, cubso_desc, unspsc_id, unspsc_desc, estado)
+
+actores(ocid →, ruc, nombre, rol)   -- 'tenderer' | 'supplier'  ⭐ índice de postores
+adjudicaciones(id PK, ocid →, fecha, monto, moneda, monto_pen)
+adjudicacion_ruc(adjudicacion_id →, ruc, nombre)
+contratos(id PK, ocid →, award_id, titulo, firmado, inicio, fin, monto_pen)
+documentos(id PK, ocid →, tipo, titulo, url, publicado, formato)
+
+proveedores(ruc PK, nombre, n_procesos, n_adjudicaciones, ultimo)  -- derivada
+procesos_fts  FTS5(descripcion, nomenclatura, items)               -- búsqueda de texto
+```
+
+Esto resuelve de un golpe: búsqueda instantánea sobre años, paginación y orden reales
+(adiós al tope de 150), estadísticas como `GROUP BY`, memoria plana sin importar el
+rango, índice propio de postores (que la API no permite buscar), y un solo archivo
+para desplegar.
+
+**Hoy** el buscador parsea los JSON completos a memoria: el cache ya pesa **220 MB
+por 3 meses**, y guarda una copia por cada nº de meses consultado. Con un usuario en
+local aguanta; con varios abogados y rangos largos, no.
+
+### 5.2 `cuentas.db`
+
+```sql
+estudios(id PK, nombre)
+usuarios(id PK, email UNIQUE, nombre, estudio_id →, creado, ultimo_acceso)
+sesiones(token PK, usuario_id →, expira)
+tokens(token PK, tipo, usuario_id →, payload_json, expira, usado)  -- login E invitación
+
+carteras(id PK, estudio_id →, nombre)
+cartera_entidad(cartera_id →, entidad_id)
+
+busquedas(id PK, usuario_id →, nombre, filtros_json)
+alertas(id PK, busqueda_id →, propietario_id →,
+        frecuencia_json, proximo_envio, ultima_fecha, pausada)
+alerta_suscriptor(alerta_id →, usuario_id →, estado)  -- pendiente|aceptada|baja
+seguimientos(id PK, usuario_id →, ocid, snapshot_json)
+envios(id PK, alerta_id →, fecha, n_procesos)          -- auditoría: "¿me llegó todo?"
+```
+
+`envios` parece opcional y no lo es: cuando un abogado pregunte *"¿por qué no me
+avisaron de este proceso?"*, es la única forma de responder.
+
+---
+
+## 6. Frecuencia de alertas
+
+```
+¿Cada cuánto?
+  ○ Apenas se publique   (revisa cada hora, 07–20 h)
+  ● Una vez al día       [ 08:00 ▾ ]
+  ○ Dos veces al día     [ 08:00 ▾ ] [ 17:00 ▾ ]
+  ○ Semanal              [ Lunes ▾ ] [ 08:00 ▾ ]
+☐ Avísame también cuando no haya novedades
+```
+
+**El scheduler se vuelve tonto y la app inteligente**: Task Scheduler / Cloud
+Scheduler invoca `npm run alertas` **cada hora, siempre**. El runner carga los datos
+**una vez** y procesa solo las alertas con `proximo_envio <= ahora`. Añadir una
+cadencia nueva no vuelve a tocar el scheduler. Nada sale entre 20:00 y 07:00.
+
+⚠ **Límite honesto**: el bulk se regenera ~1 vez al día. Para que "apenas se
+publique" signifique algo, el runner debe hacer un **híbrido** — bulk como base +
+`fetchRecent()` sobre `/releases` (que sí se actualiza durante el día) para las
+últimas 48 h. Una fetch por invocación, no por alerta.
+
+Y **"Probar ahora"** en cada alerta: manda el correo con lo que habría enviado.
+Hoy creas una alerta y no pasa nada visible hasta mañana; eso es un acto de fe.
+
+---
+
+## 7. Estadísticas
+
+El panel gusta y es el diferenciador — pero hoy **mide mal**.
+
+**Solo el 43,6 % de los procesos publica monto** (2.430 de 5.576) y solo el 23,9 %
+tiene adjudicación. Los cinco gráficos ordenan y dimensionan **por monto**. Entonces
+"Top entidades por monto" no es *quién compra más*, es *quién compra más entre los
+que revelaron su monto*. "Por mes" es el peor: barras cronológicas dimensionadas por
+monto, así que un mes con muchos procesos y montos protegidos se ve **vacío**.
+Y además se suman **PEN + USD + EUR** como si todo fueran soles (bug 5).
+
+Por orden de valor:
+
+1. **Toggle "Nº de procesos / Monto S/"**, con procesos por defecto. Un control, y
+   los cinco gráficos pasan de engañosos a confiables.
+2. **Usar `amount_PEN`** en todo lo monetario.
+3. **Fila de KPIs** con el **% de cobertura de monto a la vista**.
+4. **Barras clicables** → aplican ese filtro a la búsqueda.
+5. **"Por mes" como línea**, no barras. Departamento: top 10 + "otros".
+6. Nota al pie en Top proveedores: cuando un award tiene varios proveedores el monto
+   se reparte en partes iguales (aproximación, no dato real).
+7. Etiqueta de que se calcula sobre **todo** el conjunto filtrado, no sobre los 150
+   visibles (ya es cierto; nadie lo sabe).
+
+**Nuevos, ahora que sabemos que existen los postores:**
+
+- **Nivel de competencia**: promedio de postores por proceso, y % de procesos con
+  **un solo postor** — un indicador clásico de riesgo en contratación pública.
+- **Quién compite contra quién**: dado un RUC, con qué otros postores coincide más.
+
+### Widget nuevo: **Próximos cierres**
+
+```
+⏳ CIERRAN ESTA SEMANA (de tus carteras)
+   mié 06 ago · Seguro Social de Salud · Adquisición de …   [🔔] [ver]
+   jue 07 ago · Municipalidad de Miraflores · Servicio de … [🔔] [ver]
+```
+
+El dato ya está (`cierreOfertas`); solo hay que ordenarlo y ponerlo en portada.
+Perder un plazo es el peor error posible en este negocio.
+
+---
+
+## 8. Visión de UI
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  SEACE Alertas          Buscar  Alertas  Carteras  Panel   ▾ │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Cinco pantallas, no una:
+
+| Pantalla | Contenido |
 |---|---|
-| **Exportar a Excel / CSV** | Van a querer anexar la búsqueda a un informe para el cliente. Es la petición nº 1 garantizada. |
-| **Paginación y orden** | Hoy hay un tope duro de 150 resultados. Una búsqueda por entidad grande lo revienta. |
-| **Vigilar un proveedor** como objeto | "Avísame cuando *Constructora X* gane algo". Hoy solo se puede como texto. |
-| **Carpetas por cliente** | Un estudio no tiene "mis alertas", tiene "las alertas del caso Fulano". Agrupar alertas y seguimientos por cliente es el diferenciador real frente a buscar en el SEACE gratis. |
-| **Alertas de estado jurídico** | "Avísame si algo pasa a APELADO / SUSPENDIDO / NULO". El motor de seguimientos ya detecta cambios de estado — falta exponerlo como alerta por filtro, no solo por proceso. |
-| **Copiar nomenclatura** | La ficha del SEACE no admite enlace directo (verificado). Un botón de copiar ahorra el paso manual cada vez. |
+| **Buscar** | Los 2 (3) campos + filtros + resultados paginados. Filtros en la URL → enlaces compartibles entre abogados |
+| **Alertas** | Tabla: nombre, frecuencia, último envío, nº de resultados, suscriptores (con estado de invitación), [Probar ahora] [Pausar] [Editar] |
+| **Carteras** | Grupos de entidades, reutilizables |
+| **Panel** | Próximos cierres + estadísticas + cambios recientes en lo que sigo |
+| **Proveedor** | Ficha de un RUC: procesos en los que se presentó, cuáles ganó, contra quién compitió, contratos |
+
+Principios, en orden:
+
+1. **Nada de jerga.** Ni regex, ni "OCDS", ni "ocid", ni "compiledRelease".
+2. **Decir siempre sobre qué datos se está mirando.** "43,6 % publica monto" a la
+   vista, no en letra chica. Un abogado que cita un número tiene que poder defenderlo.
+3. **Todo enlazable.** El estado vive en la URL; se comparte por correo interno.
+4. **Nunca cero resultados sin explicación.** Hoy elegir EsSalud da 0 en silencio.
+   Debe decir por qué y ofrecer la salida.
+5. **Exportar desde cualquier vista.** Excel/CSV; van a anexarlo a informes.
+6. **Fechas siempre en hora de Lima**, y los vencidos en rojo.
 
 ---
 
-## 5. Fase 3 — Para que sea "una app corriendo"
+## 9. Recomendación: ¿seguir planificando o construir?
 
-### 5.1 El techo técnico: hay que pasar a SQLite
+**Construir. Ya hay plan de sobra.** Con dos matices sobre el orden:
 
-Hoy el buscador **parsea los JSON mensuales completos a memoria**. El cache local ya
-pesa **220 MB para tres meses**. Con el rango de "Últimos 6 meses" o "Este año" se
-cargan cientos de MB en RAM por cada combinación de meses, y el cache en memoria
-guarda **una copia por cada número de meses consultado**. Con un usuario en local
-aguanta. Con el buscador que describes — varios abogados, rangos largos,
-paginación, estadísticas — no.
+**Primero el esquema, no las features.** Ahora sabemos que hacen falta postores
+(9.545/mes), índice propio de proveedores (la API no permite buscarlos por nombre),
+paginación, y tablas de usuarios/sesiones/invitaciones. Todo eso es SQLite. Si se
+construyen las features sobre los JSON en memoria y se migra después, **se escribe
+el mismo código dos veces**. Una sesión de esquema + ingesta destraba todo lo demás.
 
-**Propuesta: ingestar los zips mensuales a SQLite (`better-sqlite3`) una sola vez**,
-con una tabla de procesos + índice **FTS5** para el texto. Eso resuelve de un golpe:
+**Cuentas antes que features de búsqueda.** Suena al revés, pero: alertas, carteras
+y búsquedas guardadas **cuelgan de un usuario**. Construirlas primero contra un campo
+de texto de correo y después colgarlas de `usuario_id` es rehacer el modelo entero.
+Y el login por enlace mágico son ~150 líneas apoyadas en el SMTP que ya funciona.
 
-- búsqueda instantánea sobre años de datos, no solo meses;
-- paginación y orden reales (`LIMIT`/`OFFSET`/`ORDER BY`), adiós al tope de 150;
-- estadísticas como `GROUP BY` en vez de recorrer arrays en JS;
-- memoria plana, sin importar el rango consultado;
-- un solo archivo `.db` para respaldar o desplegar.
-
-Es **el cambio técnico más importante de todos** y todo lo de la Fase 2 se vuelve
-fácil después de hacerlo. Sugiero hacerlo **antes** de la Fase 2, no después.
-
-### 5.2 Hosting
-
-Cloud Run + Cloud Scheduler (el plan que ya estaba en el README) + el `.db` en un
-volumen persistente o GCS. Un job de ingesta diario que refresca el mes en curso;
-la app solo lee. Con eso el estudio entra por una URL y no depende de que la laptop
-de nadie esté encendida — que es la diferencia entre una herramienta y un producto.
-
-### 5.3 Lo que hay que resolver antes de exponerlo fuera
-
-- **Confirmación del correo.** Hoy cualquiera puede suscribir a cualquiera. En
-  cuanto esto sea público, es un vector de spam.
-- **Enlace de baja** en cada correo. Legalmente esperable.
-- **Autenticación mínima.** Aunque sea un magic link por correo. Hoy
-  `?email=` lista y borra las alertas de cualquiera.
-- **Tests.** Cero hoy. `aplicarFiltros()`, `normalize()` y el cálculo de
-  `proximoEnvio` son lógica con casos borde y bugs silenciosos (los §1.1 y §1.4 son
-  exactamente eso). Media docena de tests con `node:test` se pagan solos.
-
----
-
-## 6. Orden recomendado
+Orden propuesto:
 
 ```
-  AHORA   ── 1.1 espacios · 1.4 fechas Lima · estados desde datos
-             (bugs; sin esto, lo demás se construye torcido)
-     │
-  FASE 1  ── 2 campos + siglas · quitar Solo TI · frecuencia por alerta
-             · Probar ahora · localStorage · URL compartible
-     │      → aquí ya es demostrable ante un estudio
-     │
-  STATS   ── toggle procesos/monto · KPIs · barras clicables · Próximos cierres
-     │      → aquí ya es vendible
-     │
-  SQLITE  ── ingesta + FTS5   (destraba todo lo demás)
-     │
-  FASE 2  ── exportar · paginación · vigilar proveedor · carpetas por cliente
-     │
-  FASE 3  ── Cloud Run · confirmación de correo · auth · tests
+1. Bugs 1-5                      rápido, y evita construir sobre algo torcido
+2. datos.db: esquema + ingesta   destraba paginación, postores, estadísticas
+3. cuentas.db + login mágico     destraba alertas, carteras, invitaciones
+4. Búsqueda de 2 campos + carteras + quitar Solo TI/regex
+5. Alertas: frecuencia + invitaciones + Probar ahora
+6. Estadísticas: toggle, amount_PEN, KPIs, clicables, Próximos cierres
+7. Exportar · ficha de proveedor · documentos por tipo
+8. Cloud Run + Cloud Scheduler · tests
 ```
 
-El corte natural para enseñárselo a un estudio es **después de STATS**: dos campos
-que hacen lo que dicen, alertas con la cadencia que el usuario elige, y un panel que
-no miente. Todo lo de SQLite en adelante es para que aguante usuarios reales.
+El punto **5** es el primer corte demostrable ante un estudio. El **6** es el primero
+vendible.
 
 ---
 
-## 7. Decisiones abiertas
+## 10. Decisiones abiertas
 
-1. **¿El digest TI de Xertica sobrevive?** Hoy comparte código (`config.json`,
-   `filtrarRelevantes`). Puede quedarse como producto paralelo sin estorbar, o
-   convertirse en "plantillas de búsqueda" reutilizables (una plantilla "TI", otra
-   "Obras", otra "Salud") — que para un estudio sería más útil.
-2. **¿Un estudio piloto o multi-estudio desde el inicio?** Cambia si hace falta
-   multi-tenancy en el modelo de datos. Recomiendo: un estudio primero, pero que el
-   esquema SQLite lleve `cliente_id` desde el día uno.
-3. **¿Cuántas siglas cargamos a mano?** Propongo empezar con ~150 y añadir las que
-   los usuarios busquen sin resultado (registrar las búsquedas fallidas de entidad
-   es la forma barata de descubrirlo).
+1. **¿Sobrevive el digest TI de Xertica?** Comparte `config.json` y
+   `filtrarRelevantes()`. Puede quedarse como producto paralelo, o convertirse en
+   **plantillas de búsqueda** reutilizables ("TI", "Obras", "Salud") — más útil para
+   un estudio.
+2. **¿Un estudio piloto o multi-estudio?** Recomendación: piloto, pero con
+   `estudio_id` en el esquema desde el día uno.
+3. **¿Cuántas siglas cargamos a mano?** Empezar con ~150 y registrar las búsquedas de
+   entidad sin resultado para descubrir el resto.
+4. **¿Cuánta historia ingestamos?** El cache tiene 3 meses. Un estudio va a querer
+   años (para historial de competidores). Cada mes son ~50-100 MB de JSON, pero en
+   SQLite comprime muchísimo. Propongo empezar con 24 meses.

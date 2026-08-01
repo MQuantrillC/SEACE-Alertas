@@ -4,7 +4,8 @@
 > trabajo** (ver [Cómo mantener este doc](#cómo-mantener-este-doc) al final).
 > Última actualización: **2026-08-01**.
 >
-> Este doc = **cómo está hoy**. Para el **hacia dónde va**, ver [PLAN.md](PLAN.md).
+> Este doc = **cómo está hoy** · [PLAN.md](PLAN.md) = hacia dónde va ·
+> [API.md](API.md) = qué se puede sacar realmente de la fuente.
 
 ---
 
@@ -187,6 +188,19 @@ que también haya señal alta.
 - **Cobertura de datos (julio 2026, 5.576 procesos)**: monto referencial > 0 en el
   **43,6 %**, adjudicaciones en el **23,9 %**, departamento en el **100 %**. Por eso
   las estadísticas por monto son un ranking parcial, no el total real.
+- **`buyer.id` coincide con las claves de `buyers.json` en 5.576/5.576.** Filtrar por
+  id en vez de por nombre elimina de raíz el problema del doble espacio.
+- **Las estadísticas suman monedas distintas.** Julio trae 86 procesos en USD, 5 en
+  EUR y 2 en GBP, y se suman como soles. `tender.value.amount_PEN` existe al 100 %.
+- **`tender.tenderers[]` existe y no se usa**: 9.545 postores en julio (29,9 % de los
+  procesos), todos con RUC. Es "quién se presentó", no solo quién ganó.
+- **`/api/v1/suppliers` no admite búsqueda por nombre** (probado con `search`, `name`,
+  `q`, `supplierName`: devuelve los 497.911 completos). Buscar proveedores exige
+  índice propio; el detalle sí se baja con `supplierID=PE-RUC-…`.
+- **La ficha del SEACE tiene campos que la API no publica**: Normativa Aplicable
+  (Ley 32069/30225), Causal, Tipo de Compra, Derecho de Participación y el cronograma
+  completo etapa-por-etapa. Verificado por búsqueda directa en el bulk. Ver
+  [API.md](API.md) §5 — no prometer esos campos.
 
 ## 7. Estado actual (2026-08-01)
 
