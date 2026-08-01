@@ -3,6 +3,8 @@
 > Documento vivo de contexto del proyecto. **Actualízalo al final de cada sesión de
 > trabajo** (ver [Cómo mantener este doc](#cómo-mantener-este-doc) al final).
 > Última actualización: **2026-08-01**.
+>
+> Este doc = **cómo está hoy**. Para el **hacia dónde va**, ver [PLAN.md](PLAN.md).
 
 ---
 
@@ -169,6 +171,22 @@ que también haya señal alta.
 - **El corte de una alerta avanza a la publicación más reciente enviada**, no a
   "ahora", para no saltarse el hueco si el bulk se regenera con retraso.
 - Tope de 50 procesos por correo de alerta (una alerta sin filtros matchea cientos).
+- **Los nombres de entidad del catálogo NO coinciden byte a byte con los del bulk.**
+  Catálogo: `"SEGURO SOCIAL DE SALUD"`; datos: `"SEGURO SOCIAL DE  SALUD"` (doble
+  espacio). `fold()` no colapsa espacios → elegir EsSalud en el autocompletado da
+  **0 resultados**. 19 entidades / 180 procesos afectados en julio 2026; colapsar
+  espacios arregla 1372/1372. Ver [PLAN.md](PLAN.md) §1.1.
+- **Las siglas no existen en el dato.** `ESSALUD`, `MINSA`, `MINEDU`, `PETROPERU`,
+  `INDECOPI`, `OSINERGMIN` → 0 coincidencias en las 3.316 entidades del catálogo.
+  Buscar por sigla exige un diccionario propio. Ver [PLAN.md](PLAN.md) §1.2.
+- **La lista de estados de `web/index.html` está incompleta**: los datos traen 12
+  estados, la UI ofrece 8. Faltan `SUSPENDIDO`, `RETROTRAIDO_POR_RESOLUCION`,
+  `DEJAR_SIN_EFECTO_ADJUDICACION`, `PENDIENTE_DE_REGISTRO_DE_EFECTO`.
+- **`iso()` del frontend usa UTC** → después de las 19:00 de Lima, el filtro "Hoy"
+  pide el día siguiente y devuelve 0 resultados.
+- **Cobertura de datos (julio 2026, 5.576 procesos)**: monto referencial > 0 en el
+  **43,6 %**, adjudicaciones en el **23,9 %**, departamento en el **100 %**. Por eso
+  las estadísticas por monto son un ranking parcial, no el total real.
 
 ## 7. Estado actual (2026-08-01)
 
@@ -179,15 +197,27 @@ que también haya señal alta.
 - `out/alertas.log` muestra corridas hasta el **2026-07-31**, sin novedades → el
   runner ya está programado y corriendo (Task Scheduler).
 - Último código tocado: `src/seace.mjs`, `src/server.mjs`, `web/index.html` (2026-07-11).
-- **El proyecto no está bajo control de versiones** (no hay `.git`), aunque sí existe
-  un `.gitignore` preparado. Pendiente: `git init` si se quiere historial/backup.
+- **Bajo control de versiones desde el 2026-08-01**:
+  <https://github.com/MQuantrillC/SEACE-Alertas> (rama `main`).
+- **Cambio de rumbo (2026-08-01):** el público objetivo pasa de "Xertica buscando
+  oportunidades TI" a **estudios de abogados que monitorean el SEACE**. Se quita
+  "Solo TI" del buscador y la búsqueda pasa a dos campos explícitos
+  (Entidad / Descripción del Objeto). Plan completo en [PLAN.md](PLAN.md).
 
 ## 8. Ideas / pendientes
 
-- Automatizar el digest en Cloud Run + Cloud Scheduler (hoy solo Task Scheduler local).
-- Limpiar las alertas de prueba y crear las reales del equipo comercial.
-- Purga/rotación del cache de `out/cache/` (crece ~50-100 MB por mes consultado).
-- `git init` + primer commit.
+Prioridad y detalle en [PLAN.md](PLAN.md). Resumen:
+
+- **Bugs primero**: colapsar espacios en `fold()`, fechas en hora de Lima, estados
+  desde los datos (§6).
+- Fase 1: dos campos de búsqueda + diccionario de siglas, quitar "Solo TI",
+  frecuencia por alerta, "Probar ahora", recordar correo, filtros en la URL.
+- Estadísticas: toggle procesos/monto, KPIs, barras clicables, "Próximos cierres".
+- Migrar el almacenamiento a SQLite + FTS5 (destraba paginación, orden y escala).
+- Deploy en Cloud Run + Cloud Scheduler; confirmación de correo, baja y auth mínima.
+- Limpiar las alertas de prueba; purga del cache de `out/cache/`.
+- `config.json` lleva un correo real en `destinatarios` y está commiteado — sacarlo
+  si el repo pasa a público.
 
 ---
 
