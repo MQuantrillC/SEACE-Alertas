@@ -13,7 +13,9 @@
     "digest:send": "node --env-file-if-exists=.env src/index.mjs --send",
     "web": "node --env-file-if-exists=.env src/server.mjs",
     "alertas": "node --env-file-if-exists=.env src/alertas.mjs",
-    "ingesta": "node --max-old-space-size=4096 src/ingesta.mjs"
+    "ingesta": "node --max-old-space-size=4096 src/ingesta.mjs",
+    "usuario": "node --env-file-if-exists=.env src/usuario.mjs",
+    "test": "node src/verificar-cuentas.mjs && node src/verificar.mjs && node src/verificar-siglas.mjs"
   },
   "dependencies": {
     "adm-zip": "^0.6.0",

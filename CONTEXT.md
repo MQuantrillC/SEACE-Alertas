@@ -112,6 +112,40 @@ node src/verificar-buscar.mjs    # humo + tiempos de búsqueda
 Rendimiento medido sobre los 152 k procesos: búsquedas 12-170 ms, autocompletado de
 entidad 4-17 ms, de proveedor ~70 ms.
 
+## 3.ter Capa nueva: cuentas.db (acceso e invitaciones)
+
+```
+src/cuentas.mjs         Esquema de datos/cuentas.db + utilidades de usuario
+src/auth.mjs            Enlace mágico, sesiones, invitaciones, cookies
+src/correosAuth.mjs     Plantillas HTML de acceso e invitación
+src/usuario.mjs         CLI de cuentas.  npm run usuario
+src/verificar-cuentas.mjs  30 pruebas sobre base temporal.  npm test
+```
+
+Reglas que NO hay que romper al tocar esto:
+
+- **El registro por web está cerrado** (`REGISTRO_ABIERTO=1` lo abre). Un correo
+  desconocido que pide acceso no crea cuenta ni recibe nada, y el mensaje es
+  idéntico al de un correo válido para no filtrar quién tiene cuenta.
+- **Los tokens se guardan hasheados** (sha256). El valor en claro solo existe en el
+  correo del usuario y en su cookie.
+- **`auth.destinatarios(alertaId)` es el único camino para enviar** un correo de
+  alerta: devuelve solo quien aceptó la invitación. Nunca enviar a una lista suelta.
+- Invitación: caduca a los 7 días, un solo uso, y aceptarla verifica el correo e
+  inicia sesión. Mientras esté `pendiente`, esa persona no recibe nada.
+- Cookie `seace_sesion`: HttpOnly + SameSite=Lax; `COOKIE_SECURE=1` añade Secure
+  cuando se sirva por HTTPS.
+
+Variables de entorno nuevas: `BASE_URL` (para los enlaces de los correos),
+`REGISTRO_ABIERTO`, `COOKIE_SECURE`, `CUENTAS_DB`.
+
+```bash
+npm run usuario -- --crear ana@estudio.pe --nombre "Ana" --estudio "Estudio X"
+npm run usuario -- --enlace ana@estudio.pe   # acceso sin enviar correo
+npm run usuario -- --listar
+npm test                                     # cuentas + datos + siglas
+```
+
 ## 4. Cómo correrlo
 
 Node ≥ 18 (verificado con v24.18.0). Desde la raíz del proyecto:
