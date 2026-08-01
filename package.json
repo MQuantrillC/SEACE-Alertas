@@ -12,10 +12,12 @@
     "digest": "node src/index.mjs",
     "digest:send": "node --env-file-if-exists=.env src/index.mjs --send",
     "web": "node --env-file-if-exists=.env src/server.mjs",
-    "alertas": "node --env-file-if-exists=.env src/alertas.mjs"
+    "alertas": "node --env-file-if-exists=.env src/alertas.mjs",
+    "ingesta": "node --max-old-space-size=4096 src/ingesta.mjs"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
-    "nodemailer": "^6.9.16"
+    "adm-zip": "^0.6.0",
+    "better-sqlite3": "^13.0.2",
+    "nodemailer": "^9.0.3"
   }
 }

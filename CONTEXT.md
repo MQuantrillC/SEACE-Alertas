@@ -81,6 +81,37 @@ Dependencias: solo **`adm-zip`** (descomprimir los meses) y **`nodemailer`** (SM
 `cierreOfertas`, `etapas[]`, `basesUrl`, `departamento`, `estados[]`,
 `proveedores[]`, `adjudicaciones[]` (monto real por award).
 
+## 3.bis Capa nueva: datos.db (SQLite)
+
+En construcción desde el 2026-08-01, conviviendo con el buscador viejo hasta que
+`server.mjs` se migre.
+
+```
+src/db.mjs         Esquema y conexión de datos/datos.db (gitignored)
+src/ingesta.mjs    Zips mensuales del OECE → SQLite.  npm run ingesta
+src/buscar.mjs     Búsqueda, autocompletados, facetas y vencimientos (SQL)
+src/verificar*.mjs Comprobaciones: datos, siglas y búsqueda
+siglas.json        92 siglas → nombre oficial (ESSALUD → SEGURO SOCIAL DE SALUD)
+```
+
+Estado actual de la base: **23 meses · 152.173 procesos · 3.316 entidades ·
+168.863 RUCs · 775.606 documentos · 1,68 M participaciones de postores · 1,1 GB.**
+
+Comandos:
+
+```bash
+npm run ingesta                  # últimos 24 meses; salta los ya cargados
+npm run ingesta -- --meses 6
+npm run ingesta -- --desde 2025-01
+npm run ingesta -- --rehacer     # fuerza recarga
+node src/verificar.mjs           # integridad y bugs conocidos
+node src/verificar-siglas.mjs    # que cada sigla resuelva
+node src/verificar-buscar.mjs    # humo + tiempos de búsqueda
+```
+
+Rendimiento medido sobre los 152 k procesos: búsquedas 12-170 ms, autocompletado de
+entidad 4-17 ms, de proveedor ~70 ms.
+
 ## 4. Cómo correrlo
 
 Node ≥ 18 (verificado con v24.18.0). Desde la raíz del proyecto:
@@ -190,8 +221,13 @@ que también haya señal alta.
   las estadísticas por monto son un ranking parcial, no el total real.
 - **`buyer.id` coincide con las claves de `buyers.json` en 5.576/5.576.** Filtrar por
   id en vez de por nombre elimina de raíz el problema del doble espacio.
-- **Las estadísticas suman monedas distintas.** Julio trae 86 procesos en USD, 5 en
-  EUR y 2 en GBP, y se suman como soles. `tender.value.amount_PEN` existe al 100 %.
+- **Las estadísticas del buscador viejo suman monedas distintas** (USD/EUR/GBP como
+  soles). `amount_PEN` corrige eso, pero **no está siempre**: falta en el 10 % de los
+  procesos en USD con monto real. La ingesta lo deja en NULL, nunca en 0.
+- **El "cierre de ofertas" no sirve para avisar de plazos.** `tenderPeriod.endDate`
+  coincide con el día de publicación en el 95,6 % de los casos y no tiene ningún
+  vencimiento futuro en 24 meses. El plazo utilizable es `enquiryPeriod.endDate`
+  (consultas y observaciones): 71,1 % de cobertura y vencimientos futuros reales.
 - **`tender.tenderers[]` existe y no se usa**: 9.545 postores en julio (29,9 % de los
   procesos), todos con RUC. Es "quién se presentó", no solo quién ganó.
 - **`/api/v1/suppliers` no admite búsqueda por nombre** (probado con `search`, `name`,

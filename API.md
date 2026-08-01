@@ -65,10 +65,30 @@ luego bajar el detalle con `supplierID`.
 | `tender.mainProcurementCategory` | 100 % | `goods` 2.474 · `services` 2.229 · `works` 873 |
 | `tender.value.amount` | 43,6 % > 0 | El resto lo protege la ley |
 | `tender.value.currency` | 100 % | PEN 5.483 · **USD 86 · EUR 5 · GBP 2** |
-| `tender.value.amount_PEN` | 100 % | ⭐ **Ya normalizado a soles** |
+| `tender.value.amount_PEN` | ver ⚠ | Normalizado a soles |
 | `tender.hasTenderInformationProtectedByLaw` | 100 % | Explica los montos en 0 |
 | `planning.budget.description` | 100 % | `Fondos Públicos` |
 | `planning.budget.project` / `projectID` | 43,9 % | Proyecto de inversión (obras) |
+
+⚠ **Corrección (2026-08-01):** `amount_PEN` **no** está siempre. La lectura inicial
+de "100 %" contaba como presentes los valores en 0. Sobre los procesos con monto
+real > 0 falta en el **10 % de los USD** y en algunos EUR. Rellenarlo con 0 haría
+que un proceso de USD 2 M contara como cero sin que nadie lo note; la ingesta lo
+deja en **NULL** para poder contarlo y declararlo (18 procesos de 12.618 en la
+prueba de 2 meses). Ratios reales cuando sí viene: USD ≈ 3,5 · EUR ≈ 4,2 · GBP ≈ 4,9.
+
+### ⚠ Plazos: cuál sirve para avisar y cuál no
+
+Medido sobre **152.173 procesos (24 meses)**:
+
+| Campo | Cobertura | ¿Sirve para avisar de un plazo futuro? |
+|---|---|---|
+| `tenderPeriod.endDate` | 94 % | ❌ **No.** Coincide con el día de publicación en el 95,6 % de los casos. Solo 6.653 (4,4 %) son un cierre real — y **ninguno está en el futuro**. En julio 2026: 74 de 5.563 |
+| `enquiryPeriod.endDate` | 71,1 % | ✅ **Sí.** 443 vencimientos futuros en el momento de medir. En julio 2026: 3.928 de 5.563 |
+
+Es decir: **el "cierre de ofertas" no se puede prometer como aviso.** El plazo que
+sí es utilizable —y el que de verdad le importa a un estudio— es el **fin de
+consultas y observaciones**, la ventana para cuestionar formalmente las bases.
 
 ### Ítems — 100 %
 `tender.items[]`: `description`, `quantity`, `unit.name`, `totalValue`, `statusDetails`.

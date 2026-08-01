@@ -19,8 +19,9 @@ const CURRENT_MONTH_TTL_MS = 6 * 60 * 60 * 1000;
 const monthUrl = (y, m) =>
   `https://contratacionesabiertas.oece.gob.pe/api/v1/file/seace_v3/json/${y}/${String(m).padStart(2, '0')}/`;
 
-/** Descarga y descomprime el JSON de un mes → ruta local, o null si no existe (404). */
-async function ensureMonthFile(y, m) {
+/** Descarga y descomprime el JSON de un mes → ruta local, o null si no existe (404).
+ *  Exportado: lo reutiliza src/ingesta.mjs para poblar datos.db. */
+export async function ensureMonthFile(y, m) {
   mkdirSync(CACHE_DIR, { recursive: true });
   const file = join(CACHE_DIR, `${y}-${String(m).padStart(2, '0')}.json`);
 

@@ -289,16 +289,21 @@ Por orden de valor:
   **un solo postor** — un indicador clásico de riesgo en contratación pública.
 - **Quién compite contra quién**: dado un RUC, con qué otros postores coincide más.
 
-### Widget nuevo: **Próximos cierres**
+### Widget nuevo: **Próximos vencimientos**
 
 ```
-⏳ CIERRAN ESTA SEMANA (de tus carteras)
-   mié 06 ago · Seguro Social de Salud · Adquisición de …   [🔔] [ver]
-   jue 07 ago · Municipalidad de Miraflores · Servicio de … [🔔] [ver]
+⏳ VENCEN ESTA SEMANA — consultas y observaciones (de tus carteras)
+   lun 03 ago · Fuerza Aérea del Perú · Adquisición de material …   [🔔] [ver]
+   lun 03 ago · Seguro Social de Salud · Servicio de alquiler de …  [🔔] [ver]
 ```
 
-El dato ya está (`cierreOfertas`); solo hay que ordenarlo y ponerlo en portada.
-Perder un plazo es el peor error posible en este negocio.
+⚠ **Corregido tras medirlo (2026-08-01).** El plan decía que bastaba con ordenar
+`cierreOfertas`. No es así: `tenderPeriod.endDate` coincide con el día de
+publicación en el 95,6 % de los casos y **no tiene ni un solo vencimiento futuro**
+en 24 meses de datos. El widget se construye sobre `enquiryPeriod.endDate`
+(71,1 % de cobertura, 443 vencimientos futuros), que además es el plazo
+jurídicamente más relevante: la ventana para cuestionar las bases. El cierre de
+ofertas se muestra cuando existe, pero no se promete. Ver [API.md](API.md) §2.
 
 ---
 
