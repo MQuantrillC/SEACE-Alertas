@@ -633,8 +633,11 @@ $('nuevaAlerta').addEventListener('click', () => {
   $('avisoAlerta').hidden = true;
   $('veloAlerta').hidden = false;
 });
-$('cancelarAlerta').addEventListener('click', () => { $('veloAlerta').hidden = true; });
-$('veloAlerta').addEventListener('click', (e) => { if (e.target.id === 'veloAlerta') $('veloAlerta').hidden = true; });
+const cerrarDialogo = () => { $('veloAlerta').hidden = true; };
+$('cancelarAlerta').addEventListener('click', cerrarDialogo);
+// Clic en el fondo oscuro, y Escape: las dos salidas que la gente prueba.
+$('veloAlerta').addEventListener('click', (e) => { if (e.target.id === 'veloAlerta') cerrarDialogo(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('veloAlerta').hidden) cerrarDialogo(); });
 
 $('guardarAlerta').addEventListener('click', async () => {
   const filtros = Object.fromEntries(parametros());
