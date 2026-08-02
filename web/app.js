@@ -143,22 +143,34 @@ function autocompletar(inputId, cajaId, url, pintar, elegir) {
   let timer;
   // Sin caché de "última consulta": guardarla ahorraba una petición de 10 ms pero
   // dejaba la lista oculta al volver a escribir lo mismo tras elegir algo.
+  // Cada búsqueda lleva número: si llegan dos respuestas desordenadas, la vieja
+  // no puede pisar a la nueva.
+  let peticion = 0;
+
   input.addEventListener('input', () => {
     clearTimeout(timer);
     const q = input.value.trim();
     if (q.length < 2) { caja.hidden = true; return; }
+    // "Buscando…" desde ya. Antes se veía "Sin coincidencias" durante el viaje de
+    // ida y vuelta, que es decirle al usuario que no hay nada cuando aún no se sabe.
+    caja.innerHTML = '<div class="vacio">Buscando…</div>';
+    caja.hidden = false;
     timer = setTimeout(async () => {
+      const mia = ++peticion;
       try {
         const r = await (await fetch(`${url}?q=${encodeURIComponent(q)}`)).json();
+        if (mia !== peticion) return;              // llegó tarde: ya hay otra en curso
         const items = r.entidades ?? r.proveedores ?? [];
         caja.innerHTML = items.length
           ? items.map((x, i) => `<div data-i="${i}">${pintar(x)}</div>`).join('')
-          : '<div class="vacio">Sin coincidencias</div>';
+          : `<div class="vacio">Sin coincidencias para “${esc(q)}”</div>`;
         caja.hidden = false;
         caja.querySelectorAll('div[data-i]').forEach((el) => {
           el.addEventListener('click', () => { elegir(items[Number(el.dataset.i)]); caja.hidden = true; input.value = ''; });
         });
-      } catch { caja.hidden = true; }
+      } catch {
+        if (mia === peticion) caja.innerHTML = '<div class="vacio">No se pudo consultar. Reintenta.</div>';
+      }
     }, 180);
   });
   input.addEventListener('keydown', (e) => { if (e.key === 'Escape') caja.hidden = true; });

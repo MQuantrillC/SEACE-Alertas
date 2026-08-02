@@ -207,23 +207,53 @@ function hidratar(db, r) {
 export function buscarEntidades(db, texto, { limite = 20, siglas = {} } = {}) {
   const t = norm(texto);
   if (!t) return [];
-  // Una sigla ('essalud') no aparece en el nombre oficial ('SEGURO SOCIAL DE SALUD'),
-  // así que se traduce antes de consultar. Ver API.md §5 y siglas.json.
-  const expandido = siglas[t] ? norm(siglas[t]) : t;
-  const palabras = expandido.split(' ').filter(Boolean);
-  const cond = palabras.map(() => 'e.nombre_norm LIKE ?').join(' AND ');
+
+  // Las siglas se buscan por PREFIJO, no por coincidencia exacta. Quien escribe
+  // "ess" espera ver EsSalud sin llegar a teclear "essalud" — y como la sigla no
+  // aparece en el nombre oficial ("SEGURO SOCIAL DE SALUD"), sin esto la búsqueda
+  // no devuelve nada en absoluto. Igual con "min" → MINSA, MINEDU, MININTER…
+  const coincidencias = Object.entries(siglas)
+    .filter(([k]) => !k.startsWith('_') && k.startsWith(t))
+    .slice(0, 6);
+
+  // El texto tal cual + lo que designa cada sigla que empiece por él.
+  const consultas = [{ sigla: null, texto: t }];
+  for (const [k, v] of coincidencias) consultas.push({ sigla: k.toUpperCase(), texto: norm(v) });
+
+  // Cada consulta exige TODAS sus palabras; entre consultas es un OR.
+  // "municipalidad de mira" debe encontrar "MUNICIPALIDAD DISTRITAL DE MIRAFLORES".
+  const trozos = [], par = [];
+  for (const c of consultas) {
+    const palabras = c.texto.split(' ').filter(Boolean);
+    if (!palabras.length) continue;
+    trozos.push('(' + palabras.map(() => 'e.nombre_norm LIKE ?').join(' AND ') + ')');
+    par.push(...palabras.map((p) => '%' + p + '%'));
+  }
+  if (trozos.length === 0) return [];
+
   const filas = db.prepare(`
-    SELECT e.id, e.nombre, e.departamento, count(p.ocid) AS procesos
+    SELECT e.id, e.nombre, e.nombre_norm, e.departamento, count(p.ocid) AS procesos
     FROM entidades e LEFT JOIN procesos p ON p.entidad_id = e.id
-    WHERE ${cond}
+    WHERE ${trozos.join(' OR ')}
     GROUP BY e.id
-    ORDER BY (e.nombre_norm = ?) DESC, procesos DESC, length(e.nombre), e.nombre
-    LIMIT ?`).all(...palabras.map((p) => '%' + p + '%'), expandido, limite);
-  return filas.map((f) => ({
-    ...f,
-    // Marca la entidad que la sigla designa, para poder mostrarla en la lista.
-    sigla: siglas[t] && norm(f.nombre).includes(expandido) ? texto.trim().toUpperCase() : null,
-  }));
+    ORDER BY procesos DESC, length(e.nombre), e.nombre
+    -- Se traen bastantes más de las que se van a mostrar: el orden final lo decide
+    -- el reordenamiento de abajo (que prima la sigla). Si aquí se recortara al
+    -- límite pedido, la entidad correcta podría quedar fuera antes de poder
+    -- subirla: con "min" entraban nueve por volumen y MINISTERIO DE SALUD no.
+    LIMIT 200`).all(...par);
+
+  // Etiqueta con su sigla las entidades que designa y las sube. El desempate
+  // importa: para "minsa" tiene que salir primero MINISTERIO DE SALUD, no una de
+  // sus unidades ejecutoras (que puede tener más procesos). Por eso la coincidencia
+  // EXACTA con el nombre que la sigla designa pesa más que el volumen.
+  const etiquetadas = filas.map((f) => {
+    const c = consultas.find((x) => x.sigla && f.nombre_norm.includes(x.texto));
+    const { nombre_norm, ...resto } = f;
+    return { ...resto, sigla: c?.sigla ?? null, _rango: !c ? 0 : nombre_norm === c.texto ? 2 : 1 };
+  });
+  etiquetadas.sort((a, b) => b._rango - a._rango || b.procesos - a.procesos);
+  return etiquetadas.slice(0, limite).map(({ _rango, ...e }) => e);
 }
 
 /** Proveedores/postores por RUC o razón social, desde nuestro propio índice

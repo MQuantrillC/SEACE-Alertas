@@ -102,6 +102,43 @@ main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 60px; }
 }
 .campo .pista { font-size: 11px; color: var(--tenue); margin-top: 5px; }
 
+/* Fila de proveedor + botones.
+   Tres filas explícitas (etiqueta / control / pista) compartidas por las dos
+   columnas: los botones van en la fila del control, así su borde superior
+   coincide con el del input. La etiqueta y la pista no los desplazan porque
+   ocupan filas distintas. */
+.filaControles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  column-gap: 14px;
+  align-items: start;
+  margin-top: 14px;
+}
+.filaControles > .et {
+  grid-column: 1; grid-row: 1;
+  font-size: 11px; font-weight: bold; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--suave); margin-bottom: 5px;
+}
+.filaControles > .et .opcional { font-weight: normal; text-transform: none; letter-spacing: 0; }
+.filaControles > .campoEntrada { grid-column: 1; grid-row: 2; }
+.filaControles > .pistaFila {
+  grid-column: 1; grid-row: 3;
+  font-size: 11px; color: var(--tenue); margin-top: 5px;
+}
+.filaControles > .botonesFila {
+  grid-column: 2; grid-row: 2;
+  display: flex; gap: 8px;
+}
+.filaControles > .botonesFila #buscar { flex: 1; }
+
+/* En pantalla estrecha las dos columnas se apilan y los botones pasan a su
+   propia fila, a todo lo ancho. */
+@media (max-width: 720px) {
+  .filaControles { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto; row-gap: 0; }
+  .filaControles > .botonesFila { grid-column: 1; grid-row: 4; margin-top: 12px; }
+}
+
 .autocompletar { position: relative; }
 .sugerencias {
   position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; right: 0;
