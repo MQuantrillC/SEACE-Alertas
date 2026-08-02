@@ -140,14 +140,14 @@ for (const id of ['conAdjudicacion', 'soloUnPostor']) $(id).addEventListener('ch
 
 function autocompletar(inputId, cajaId, url, pintar, elegir) {
   const input = $(inputId), caja = $(cajaId);
-  let timer, ultima = '';
+  let timer;
+  // Sin caché de "última consulta": guardarla ahorraba una petición de 10 ms pero
+  // dejaba la lista oculta al volver a escribir lo mismo tras elegir algo.
   input.addEventListener('input', () => {
     clearTimeout(timer);
     const q = input.value.trim();
     if (q.length < 2) { caja.hidden = true; return; }
     timer = setTimeout(async () => {
-      if (q === ultima) return;
-      ultima = q;
       try {
         const r = await (await fetch(`${url}?q=${encodeURIComponent(q)}`)).json();
         const items = r.entidades ?? r.proveedores ?? [];
@@ -481,6 +481,307 @@ async function cargarStats() {
   }
 }
 
+// ── Navegación entre vistas ─────────────────────────────────────────────────
+
+const VISTAS = { buscar: 'vistaBuscar', alertas: 'vistaAlertas', carteras: 'vistaCarteras' };
+
+function irA(vista) {
+  for (const [nombre, id] of Object.entries(VISTAS)) $(id).hidden = nombre !== vista;
+  for (const n of ['Buscar', 'Alertas', 'Carteras']) {
+    $('nav' + n).classList.toggle('activo', n.toLowerCase() === vista);
+  }
+  if (location.hash.slice(1) !== vista) history.replaceState(null, '', '#' + vista);
+  if (vista === 'alertas') cargarAlertas();
+  if (vista === 'carteras') cargarCarteras();
+}
+for (const [n, v] of [['navBuscar', 'buscar'], ['navAlertas', 'alertas'], ['navCarteras', 'carteras']]) {
+  $(n).addEventListener('click', (e) => { e.preventDefault(); irA(v); });
+}
+$('irABuscar').addEventListener('click', (e) => { e.preventDefault(); irA('buscar'); });
+
+// ── Carteras ────────────────────────────────────────────────────────────────
+
+let carteras = [];
+let entidadesCartera = [];
+
+autocompletar('carteraEntidad', 'sugCartera', '/api/entidades',
+  (e) => `${e.sigla ? `<span class="sigla">${esc(e.sigla)}</span>` : ''}${esc(e.nombre)}` +
+    `<div class="n">${fmtNum(e.procesos)} procesos${e.departamento ? ' · ' + esc(e.departamento) : ''}</div>`,
+  (e) => {
+    if (!entidadesCartera.some((x) => x.id === e.id)) entidadesCartera.push({ id: e.id, nombre: e.nombre });
+    pintarFichasCartera();
+  });
+
+function pintarFichasCartera() {
+  $('fichasCartera').innerHTML = entidadesCartera.map((e, i) =>
+    `<span class="ficha">${esc(e.nombre)}<button data-i="${i}" title="Quitar">×</button></span>`).join('');
+  $('fichasCartera').querySelectorAll('button').forEach((b) => {
+    b.addEventListener('click', () => { entidadesCartera.splice(Number(b.dataset.i), 1); pintarFichasCartera(); });
+  });
+}
+
+async function cargarCarteras() {
+  const j = await (await fetch('/api/carteras')).json();
+  carteras = j.carteras ?? [];
+  $('listaCarteras').innerHTML = carteras.length
+    ? carteras.map((c) => `<div class="item">
+        <div class="cab">
+          <div><h3>📁 ${esc(c.nombre)}</h3>
+            <div class="cad">${c.entidades.length} entidad${c.entidades.length === 1 ? '' : 'es'}</div></div>
+          <div class="der">
+            <button class="btn chico usarCartera" data-id="${c.id}">Buscar con esta cartera</button>
+            <button class="btn chico borrarCartera" data-id="${c.id}">Eliminar</button>
+          </div>
+        </div>
+        <div class="fichas">${c.entidades.map((e) => `<span class="ficha">${esc(e.nombre)}</span>`).join('')}</div>
+      </div>`).join('')
+    : '<div class="vacio-msg"><b>Todavía no hay carteras</b><div class="sug">Crea una arriba: busca entidades, añádelas y ponle nombre.</div></div>';
+
+  for (const b of $('listaCarteras').querySelectorAll('.usarCartera')) {
+    b.addEventListener('click', () => { aplicarCartera(Number(b.dataset.id)); irA('buscar'); });
+  }
+  for (const b of $('listaCarteras').querySelectorAll('.borrarCartera')) {
+    b.addEventListener('click', async () => {
+      const c = carteras.find((x) => x.id === Number(b.dataset.id));
+      if (!confirm(`¿Eliminar la cartera “${c.nombre}”? Las alertas que la usaran conservan sus entidades.`)) return;
+      await fetch('/api/carteras?id=' + b.dataset.id, { method: 'DELETE' });
+      cargarCarteras(); refrescarSelectorCarteras();
+    });
+  }
+  refrescarSelectorCarteras();
+}
+
+function refrescarSelectorCarteras() {
+  const s = $('aplicarCartera');
+  s.innerHTML = '<option value="">Usar una cartera…</option>' +
+    carteras.map((c) => `<option value="${c.id}">📁 ${esc(c.nombre)} (${c.entidades.length})</option>`).join('');
+}
+
+function aplicarCartera(id) {
+  const c = carteras.find((x) => x.id === id);
+  if (!c) return;
+  for (const e of c.entidades) {
+    if (!estado.entidades.some((x) => x.id === e.id)) estado.entidades.push({ id: e.id, nombre: e.nombre });
+  }
+  pintarFichas(); estado.pagina = 1; buscar();
+}
+
+$('aplicarCartera').addEventListener('change', (e) => {
+  if (e.target.value) { aplicarCartera(Number(e.target.value)); e.target.value = ''; }
+});
+
+$('crearCartera').addEventListener('click', async () => {
+  const nombre = $('carteraNombre').value.trim();
+  if (!nombre) { alert('Ponle un nombre a la cartera.'); return; }
+  if (entidadesCartera.length === 0) { alert('Añade al menos una entidad.'); return; }
+  const r = await (await fetch('/api/carteras', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nombre, entidades: entidadesCartera }),
+  })).json();
+  if (r.error) { alert(r.error); return; }
+  $('carteraNombre').value = '';
+  entidadesCartera = [];
+  pintarFichasCartera();
+  cargarCarteras();
+});
+
+// ── Alertas ─────────────────────────────────────────────────────────────────
+
+const DIAS = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+
+function montarSelectoresHora() {
+  // 07:00–20:00: fuera de esa franja el servidor no programa envíos.
+  const horas = [];
+  for (let h = 7; h <= 20; h++) horas.push(`${String(h).padStart(2, '0')}:00`);
+  const opciones = (sel) => horas.map((h) => `<option value="${h}"${h === sel ? ' selected' : ''}>${h}</option>`).join('');
+  $('hora1').innerHTML = opciones('08:00');
+  $('hora2a').innerHTML = opciones('08:00');
+  $('hora2b').innerHTML = opciones('17:00');
+  $('hora3').innerHTML = opciones('08:00');
+  $('diaSemana').innerHTML = DIAS.map((d, i) => `<option value="${i}">${d}</option>`).join('');
+}
+
+function frecuenciaElegida() {
+  const tipo = document.querySelector('input[name=frec]:checked').value;
+  if (tipo === 'horaria') return { tipo };
+  if (tipo === 'diaria') return { tipo, horas: [$('hora1').value] };
+  if (tipo === 'dosDiarias') return { tipo, horas: [$('hora2a').value, $('hora2b').value] };
+  return { tipo, horas: [$('hora3').value], diaSemana: Number($('diaSemana').value) };
+}
+
+/** Descripción en castellano de los filtros actuales, para el diálogo. */
+function resumenFiltros() {
+  const partes = [];
+  if (estado.entidades.length) partes.push(estado.entidades.map((e) => e.nombre).join(', '));
+  if ($('objeto').value.trim()) partes.push(`“${$('objeto').value.trim()}”`);
+  if ($('proveedor').value.trim()) partes.push(`proveedor ${$('proveedor').value.trim()}`);
+  for (const [id, , titulo] of MULTIS) {
+    const m = valoresMulti(id);
+    if (!m.todos && !m.ninguno) partes.push(`${titulo.toLowerCase()}: ${m.valores.length}`);
+  }
+  if ($('conAdjudicacion').checked) partes.push('con ganador');
+  if ($('soloUnPostor').checked) partes.push('un solo postor');
+  return partes.length ? partes.join(' · ') : 'todas las convocatorias nuevas (sin filtros)';
+}
+
+$('nuevaAlerta').addEventListener('click', () => {
+  const vacio = filtroVacio();
+  if (vacio) { alert(`El filtro “${vacio}” está en “Ninguno”: la alerta nunca encontraría nada.`); return; }
+  $('resumenFiltrosAlerta').innerHTML = 'Filtros: <b>' + esc(resumenFiltros()) + '</b>';
+  $('alertaNombre').value = estado.entidades[0]?.nombre?.slice(0, 40)
+    ?? ($('objeto').value.trim() || 'Alerta SEACE');
+  $('avisoAlerta').hidden = true;
+  $('veloAlerta').hidden = false;
+});
+$('cancelarAlerta').addEventListener('click', () => { $('veloAlerta').hidden = true; });
+$('veloAlerta').addEventListener('click', (e) => { if (e.target.id === 'veloAlerta') $('veloAlerta').hidden = true; });
+
+$('guardarAlerta').addEventListener('click', async () => {
+  const filtros = Object.fromEntries(parametros());
+  // Los multivalor viajan como CSV en la query; la alerta los guarda como listas.
+  for (const clave of ['entidades', 'categorias', 'estados', 'montos', 'departamentos', 'metodos']) {
+    if (filtros[clave]) filtros[clave] = filtros[clave].split(',');
+  }
+  filtros.conAdjudicacion = filtros.conAdjudicacion === '1';
+  filtros.soloUnPostor = filtros.soloUnPostor === '1';
+  delete filtros.desde; delete filtros.hasta;   // el periodo lo pone el corte de la alerta
+
+  const r = await (await fetch('/api/alertas', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      nombre: $('alertaNombre').value, filtros,
+      frecuencia: frecuenciaElegida(), enviarVacios: $('enviarVacios').checked,
+    }),
+  })).json();
+
+  if (!r.ok) {
+    $('avisoAlerta').textContent = r.error;
+    $('avisoAlerta').className = 'aviso error';
+    $('avisoAlerta').hidden = false;
+    return;
+  }
+  $('veloAlerta').hidden = true;
+  irA('alertas');
+});
+
+async function cargarAlertas() {
+  $('listaAlertas').innerHTML = '<div class="cargando">Cargando…</div>';
+  const j = await (await fetch('/api/alertas')).json();
+  const alertas = j.alertas ?? [];
+  if (alertas.length === 0) {
+    $('listaAlertas').innerHTML = `<div class="vacio-msg"><b>Todavía no tienes alertas</b>
+      <div class="sug">Ve a <a href="#buscar" id="sinAlertas">Buscar</a>, ajusta los filtros
+      y pulsa “Crear alerta con estos filtros”.</div></div>`;
+    $('sinAlertas')?.addEventListener('click', (e) => { e.preventDefault(); irA('buscar'); });
+    return;
+  }
+
+  $('listaAlertas').innerHTML = alertas.map((a) => `
+    <div class="item ${a.pausada ? 'pausada' : ''}">
+      <div class="cab">
+        <div style="min-width:0;">
+          <h3>${esc(a.nombre)}</h3>
+          <div class="cad">${esc(a.cadencia)}${a.pausada ? '' :
+      a.proximoEnvio ? ` · próximo envío ${fmtFechaHora(a.proximoEnvio)}` : ''}</div>
+          <div class="filtrosRes">${esc(resumirFiltrosCliente(a.filtros))}</div>
+        </div>
+        <div class="der">
+          <button class="btn chico probar" data-id="${a.id}">Probar ahora</button>
+          ${a.esPropietario ? `
+            <button class="btn chico pausar" data-id="${a.id}" data-p="${a.pausada ? 0 : 1}">${a.pausada ? 'Reanudar' : 'Pausar'}</button>
+            <button class="btn chico borrar" data-id="${a.id}">Eliminar</button>` : ''}
+        </div>
+      </div>
+
+      <div class="seccion">
+        <h4>Quién la recibe</h4>
+        ${a.suscriptores.map((s) => `<div class="suscriptor">
+          <span>${esc(s.nombre || s.email)}</span>
+          <span class="est est-${s.estado}">${s.estado === 'aceptada' ? 'recibe' : s.estado === 'pendiente' ? 'invitación pendiente' : 'dado de baja'}</span>
+          ${a.esPropietario || s.email === USUARIO.email
+      ? `<button class="btn chico quitar" data-id="${a.id}" data-u="${s.id}">Quitar</button>` : ''}
+        </div>`).join('')}
+        ${a.esPropietario ? `<div class="fila" style="margin-top:9px;gap:6px;">
+          <input type="email" class="invEmail" data-id="${a.id}" placeholder="correo@estudio.pe" style="flex:1;min-width:180px;">
+          <button class="btn chico invitar" data-id="${a.id}">Invitar</button>
+        </div>
+        <div class="pista" style="margin-top:6px;">No recibirá nada hasta que acepte desde su correo.</div>` : ''}
+      </div>
+
+      ${a.historial.length ? `<div class="seccion"><h4>Últimos envíos</h4>
+        <div class="historial">${a.historial.map((h) =>
+        `<div><span class="fecha">${fmtFechaHora(h.fecha)}</span> — ${h.n_procesos} proceso(s)${h.error ? ' · ⚠ ' + esc(h.error) : ''}</div>`).join('')}
+        </div></div>` : ''}
+    </div>`).join('');
+
+  enlazarAcciones();
+}
+
+function enlazarAcciones() {
+  const post = (url, cuerpo) => fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo),
+  }).then((r) => r.json());
+
+  for (const b of $('listaAlertas').querySelectorAll('.probar')) {
+    b.addEventListener('click', async () => {
+      b.disabled = true; b.textContent = 'Enviando…';
+      const r = await post('/api/alertas/probar', { id: Number(b.dataset.id) });
+      alert(r.mensaje ?? r.error ?? 'Listo');
+      b.disabled = false; b.textContent = 'Probar ahora';
+    });
+  }
+  for (const b of $('listaAlertas').querySelectorAll('.pausar')) {
+    b.addEventListener('click', async () => {
+      await post('/api/alertas/pausar', { id: Number(b.dataset.id), pausada: b.dataset.p === '1' });
+      cargarAlertas();
+    });
+  }
+  for (const b of $('listaAlertas').querySelectorAll('.borrar')) {
+    b.addEventListener('click', async () => {
+      if (!confirm('¿Eliminar esta alerta? Dejará de enviarse a todos sus suscriptores.')) return;
+      await fetch('/api/alertas?id=' + b.dataset.id, { method: 'DELETE' });
+      cargarAlertas();
+    });
+  }
+  for (const b of $('listaAlertas').querySelectorAll('.quitar')) {
+    b.addEventListener('click', async () => {
+      await fetch(`/api/alertas/suscriptor?id=${b.dataset.id}&usuario=${b.dataset.u}`, { method: 'DELETE' });
+      cargarAlertas();
+    });
+  }
+  for (const b of $('listaAlertas').querySelectorAll('.invitar')) {
+    b.addEventListener('click', async () => {
+      const input = $('listaAlertas').querySelector(`.invEmail[data-id="${b.dataset.id}"]`);
+      if (!input.value.trim()) { input.focus(); return; }
+      b.disabled = true;
+      const r = await post('/api/alertas/invitar', { id: Number(b.dataset.id), email: input.value.trim() });
+      alert(r.mensaje ?? r.error);
+      b.disabled = false;
+      if (!r.error) { input.value = ''; cargarAlertas(); }
+    });
+  }
+}
+
+const fmtFechaHora = (iso) => {
+  if (!iso) return '—';
+  // Se muestra en hora de Lima, que es la que entiende el usuario.
+  const d = new Date(Date.parse(iso) - 5 * 3600e3);
+  return d.toISOString().slice(0, 16).replace('T', ' ') + ' h';
+};
+
+function resumirFiltrosCliente(f = {}) {
+  const partes = [];
+  if (f.entidades?.length) partes.push(`${f.entidades.length} entidad${f.entidades.length === 1 ? '' : 'es'}`);
+  if (f.objeto) partes.push(`“${f.objeto}”`);
+  if (f.proveedor) partes.push(`proveedor ${f.proveedor}`);
+  if (f.categorias?.length) partes.push(f.categorias.map((c) => CATEGORIAS[c] ?? c).join('/'));
+  if (f.departamentos?.length) partes.push(f.departamentos.join('/'));
+  if (f.estados?.length) partes.push(f.estados.join('/'));
+  if (f.conAdjudicacion) partes.push('con ganador');
+  if (f.soloUnPostor) partes.push('un solo postor');
+  return partes.length ? 'Filtros: ' + partes.join(' · ') : 'Sin filtros: todas las convocatorias nuevas';
+}
+
 // ── Arranque ────────────────────────────────────────────────────────────────
 
 $('buscar').addEventListener('click', () => { estado.pagina = 1; buscar(); });
@@ -499,12 +800,16 @@ $('salir').addEventListener('click', async () => {
   location.href = '/entrar';
 });
 
+let USUARIO = {};
+
 (async function iniciar() {
   const yo = await (await fetch('/api/yo')).json();
   if (yo.error) { location.href = '/entrar'; return; }
   facetas = yo.facetas;
   hoy = yo.hoy;
+  USUARIO = yo.usuario;
   $('quienSoy').textContent = [yo.usuario.nombre || yo.usuario.email, yo.usuario.estudio].filter(Boolean).join(' · ');
+  montarSelectoresHora();
 
   montarMulti('mCategoria', 'Categoría', facetas.categorias.map((c) => ({ valor: c.valor, label: CATEGORIAS[c.valor] ?? c.valor, n: c.n })));
   montarMulti('mEstado', 'Estado', facetas.estados.map((e) => ({ valor: e.valor, label: e.valor.replace(/_/g, ' '), n: e.n })));
@@ -518,5 +823,9 @@ $('salir').addEventListener('click', async () => {
   }
   $('panelStats').hidden = !estado.stats;
   pintarFichas();
+  await cargarCarteras();          // llena el selector de carteras del buscador
   buscar();
+
+  const vista = location.hash.slice(1);
+  if (VISTAS[vista]) irA(vista);
 })();

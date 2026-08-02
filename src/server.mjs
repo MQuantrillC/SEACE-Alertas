@@ -19,9 +19,15 @@ import {
 } from './buscar.mjs';
 import {
   solicitarAcceso, canjearAcceso, responderInvitacion, cerrarSesion,
-  usuarioDeSesion, leerCookie, cookieSesion, enlaceAcceso, COOKIE,
+  usuarioDeSesion, leerCookie, cookieSesion, enlaceAcceso, enlaceInvitacion,
+  invitar, suscriptores, darDeBaja, COOKIE,
 } from './auth.mjs';
-import { enviarAcceso } from './correosAuth.mjs';
+import { enviarAcceso, enviarInvitacion } from './correosAuth.mjs';
+import {
+  crearAlerta, leerAlerta, alertasDe, borrarAlerta, pausar,
+  describirFrecuencia, historialEnvios, verificarBaja,
+} from './alertasModelo.mjs';
+import { enviarAlerta, evaluar } from './enviarAlerta.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 4321);
@@ -93,8 +99,29 @@ function filtrosDeQuery(sp) {
   };
 }
 
-// Rutas que no exigen sesión.
-const PUBLICAS = new Set(['/entrar', '/acceso', '/invitacion', '/api/acceso', '/app.css', '/app.js']);
+const CAT_ES = { goods: 'Bienes', services: 'Servicios', works: 'Obras', consultoriaObra: 'Consultoría de obra' };
+
+/** Resumen legible de unos filtros, para correos y listados. */
+function resumirFiltros(f = {}) {
+  const partes = [];
+  if (f.entidades?.length) {
+    const nombres = f.entidades.map((id) =>
+      datos.prepare('SELECT nombre FROM entidades WHERE id = ?').get(id)?.nombre ?? id);
+    partes.push(nombres.slice(0, 3).join(', ') + (nombres.length > 3 ? ` y ${nombres.length - 3} más` : ''));
+  }
+  if (f.objeto) partes.push(`“${f.objeto}”`);
+  if (f.proveedor) partes.push(`proveedor ${f.proveedor}`);
+  if (f.categorias?.length) partes.push(f.categorias.map((c) => CAT_ES[c] ?? c).join('/'));
+  if (f.departamentos?.length) partes.push(f.departamentos.join('/'));
+  if (f.estados?.length) partes.push(f.estados.join('/'));
+  if (f.conAdjudicacion) partes.push('con ganador');
+  if (f.soloUnPostor) partes.push('un solo postor');
+  return partes.join(' · ') || 'todas las convocatorias';
+}
+
+// Rutas que no exigen sesión. `/baja` va sin sesión a propósito: el enlace de un
+// correo tiene que funcionar aunque quien lo pulse no recuerde ni que tiene cuenta.
+const PUBLICAS = new Set(['/entrar', '/acceso', '/invitacion', '/baja', '/api/acceso', '/app.css', '/app.js']);
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -156,6 +183,25 @@ const server = createServer(async (req, res) => {
       }
       res.writeHead(302, { Location: '/?alerta=' + r.alertaId, 'Set-Cookie': cookieSesion(r.sesion) });
       res.end();
+      return;
+    }
+
+    // Baja desde el enlace de un correo. Sin sesión y sin preguntar dos veces:
+    // poner obstáculos para dejar de recibir correo es una práctica sucia.
+    if (ruta === '/baja' && req.method === 'GET') {
+      const a = Number(url.searchParams.get('a'));
+      const u = Number(url.searchParams.get('u'));
+      const f = url.searchParams.get('f');
+      res.writeHead(verificarBaja(cuentas, a, u, f) ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
+      if (!verificarBaja(cuentas, a, u, f)) {
+        res.end(paginaAviso('Enlace no válido', 'Ese enlace de baja no es correcto o está incompleto.'));
+        return;
+      }
+      darDeBaja(cuentas, a, u);
+      const alerta = leerAlerta(cuentas, a);
+      res.end(paginaAviso('Listo, te diste de baja',
+        `No volverás a recibir correos de <b>${alerta ? alerta.nombre : 'esta alerta'}</b>. ` +
+        'Puedes volver a suscribirte cuando quieras pidiéndole al propietario que te invite de nuevo.'));
       return;
     }
 
@@ -221,6 +267,163 @@ const server = createServer(async (req, res) => {
     if (ruta === '/api/vencimientos' && req.method === 'GET') {
       const dias = Math.min(90, Number(url.searchParams.get('dias')) || 14);
       json(res, 200, { dias, vencimientos: proximosVencimientos(datos, filtrosDeQuery(url.searchParams), { dias }) });
+      return;
+    }
+
+    // ── Carteras (grupos de entidades) ────────────────────────────────────────
+    // Se comparten dentro del estudio: un grupo definido una vez sirve a todos.
+
+    const alcanceCartera = usuario.estudio_id
+      ? { sql: 'estudio_id = ?', par: usuario.estudio_id }
+      : { sql: 'estudio_id IS NULL', par: null };
+    const parCartera = alcanceCartera.par === null ? [] : [alcanceCartera.par];
+
+    if (ruta === '/api/carteras' && req.method === 'GET') {
+      const filas = cuentas.prepare(`SELECT * FROM carteras WHERE ${alcanceCartera.sql} ORDER BY nombre`).all(...parCartera);
+      json(res, 200, {
+        carteras: filas.map((c) => ({
+          ...c,
+          entidades: cuentas.prepare('SELECT entidad_id AS id, nombre FROM cartera_entidad WHERE cartera_id = ? ORDER BY nombre')
+            .all(c.id),
+        })),
+      });
+      return;
+    }
+
+    if (ruta === '/api/carteras' && req.method === 'POST') {
+      const body = await leerBody(req);
+      const nombre = String(body.nombre ?? '').trim().slice(0, 80);
+      if (!nombre) { json(res, 400, { error: 'Ponle un nombre a la cartera.' }); return; }
+      const entidades = Array.isArray(body.entidades) ? body.entidades : [];
+      if (entidades.length === 0) { json(res, 400, { error: 'Añade al menos una entidad.' }); return; }
+
+      const guardar = cuentas.transaction(() => {
+        const r = cuentas.prepare('INSERT INTO carteras (estudio_id, nombre, creado) VALUES (?,?,?)')
+          .run(usuario.estudio_id ?? null, nombre, ahora());
+        const ins = cuentas.prepare('INSERT OR IGNORE INTO cartera_entidad (cartera_id, entidad_id, nombre) VALUES (?,?,?)');
+        for (const e of entidades) if (e?.id) ins.run(r.lastInsertRowid, String(e.id), String(e.nombre ?? e.id));
+        return Number(r.lastInsertRowid);
+      });
+      json(res, 200, { ok: true, id: guardar() });
+      return;
+    }
+
+    if (ruta === '/api/carteras' && req.method === 'DELETE') {
+      const id = Number(url.searchParams.get('id'));
+      const c = cuentas.prepare(`SELECT * FROM carteras WHERE id = ? AND ${alcanceCartera.sql}`).get(id, ...parCartera);
+      if (!c) { json(res, 404, { error: 'Esa cartera no existe.' }); return; }
+      cuentas.prepare('DELETE FROM cartera_entidad WHERE cartera_id = ?').run(id);
+      cuentas.prepare('DELETE FROM carteras WHERE id = ?').run(id);
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    // ── Alertas ───────────────────────────────────────────────────────────────
+
+    if (ruta === '/api/alertas' && req.method === 'GET') {
+      json(res, 200, {
+        alertas: alertasDe(cuentas, usuario.id).map((a) => ({
+          id: a.id, nombre: a.nombre, filtros: a.filtros, frecuencia: a.frecuencia,
+          cadencia: describirFrecuencia(a.frecuencia),
+          pausada: a.pausada, enviarVacios: a.enviar_vacios,
+          proximoEnvio: a.proximo_envio, ultimoEnvio: a.ultimo_envio,
+          esPropietario: a.propietario_id === usuario.id,
+          propietario: a.propietario_email,
+          suscriptores: suscriptores(cuentas, a.id),
+          historial: historialEnvios(cuentas, a.id, 5),
+        })),
+      });
+      return;
+    }
+
+    if (ruta === '/api/alertas' && req.method === 'POST') {
+      const body = await leerBody(req);
+      const r = crearAlerta(cuentas, {
+        usuarioId: usuario.id,
+        nombre: body.nombre,
+        filtros: body.filtros ?? {},
+        frecuencia: body.frecuencia,
+        enviarVacios: !!body.enviarVacios,
+      });
+      json(res, r.ok ? 200 : 400, r);
+      return;
+    }
+
+    if (ruta === '/api/alertas' && req.method === 'DELETE') {
+      json(res, 200, borrarAlerta(cuentas, Number(url.searchParams.get('id')), usuario.id));
+      return;
+    }
+
+    if (ruta === '/api/alertas/pausar' && req.method === 'POST') {
+      const body = await leerBody(req);
+      json(res, 200, pausar(cuentas, Number(body.id), usuario.id, !!body.pausada));
+      return;
+    }
+
+    // Vista previa sin enviar: cuántos procesos saldrían ahora mismo.
+    if (ruta === '/api/alertas/previa' && req.method === 'GET') {
+      const a = leerAlerta(cuentas, Number(url.searchParams.get('id')));
+      if (!a) { json(res, 404, { error: 'La alerta no existe.' }); return; }
+      const { total, corte } = evaluar(datos, a);
+      json(res, 200, { total, corte, destinatarios: suscriptores(cuentas, a.id).filter((s) => s.estado === 'aceptada').length });
+      return;
+    }
+
+    // "Probar ahora": manda el correo real, pero SOLO a quien lo pide, y sin
+    // mover el corte. Sin esto, crear una alerta es un acto de fe hasta mañana.
+    if (ruta === '/api/alertas/probar' && req.method === 'POST') {
+      const body = await leerBody(req);
+      const a = leerAlerta(cuentas, Number(body.id));
+      if (!a) { json(res, 404, { error: 'La alerta no existe.' }); return; }
+      const r = await enviarAlerta(datos, cuentas, a, {
+        esPrueba: true,
+        soloA: { id: usuario.id, email: usuario.email },
+      });
+      json(res, 200, {
+        ok: r.enviado, total: r.total,
+        mensaje: r.enviado
+          ? `Prueba enviada a ${usuario.email} con ${r.total} proceso(s).`
+          : 'No se pudo enviar: falta configurar el SMTP (revisa la consola del servidor).',
+      });
+      return;
+    }
+
+    if (ruta === '/api/alertas/invitar' && req.method === 'POST') {
+      const body = await leerBody(req);
+      const alertaId = Number(body.id);
+      const r = invitar(cuentas, { alertaId, email: body.email, invitadoPor: usuario.id });
+      if (!r.ok) { json(res, 400, r); return; }
+      if (r.yaAceptada) { json(res, 200, { ok: true, mensaje: 'Esa persona ya está suscrita.' }); return; }
+
+      const a = leerAlerta(cuentas, alertaId);
+      const enlace = enlaceInvitacion(r.token);
+      const enviado = await enviarInvitacion(r.usuario.email, {
+        enlace,
+        enlaceRechazo: enlace + '&respuesta=no',
+        quienInvita: usuario.nombre || usuario.email,
+        nombreAlerta: a.nombre,
+        resumenFiltros: resumirFiltros(a.filtros),
+        dias: r.dias,
+      });
+      if (!enviado) console.log(`\n🔔 Invitación para ${r.usuario.email}:\n   ${enlace}\n`);
+      json(res, 200, {
+        ok: true,
+        mensaje: `Invitación enviada a ${r.usuario.email}. No recibirá nada hasta que acepte.`,
+      });
+      return;
+    }
+
+    if (ruta === '/api/alertas/suscriptor' && req.method === 'DELETE') {
+      const alertaId = Number(url.searchParams.get('id'));
+      const usuarioId = Number(url.searchParams.get('usuario'));
+      const a = leerAlerta(cuentas, alertaId);
+      if (!a) { json(res, 404, { error: 'La alerta no existe.' }); return; }
+      // Puede quitar el propietario a cualquiera, o cualquiera a sí mismo.
+      if (a.propietario_id !== usuario.id && usuarioId !== usuario.id) {
+        json(res, 403, { error: 'No puedes quitar a esa persona.' }); return;
+      }
+      darDeBaja(cuentas, alertaId, usuarioId);
+      json(res, 200, { ok: true });
       return;
     }
 

@@ -11,7 +11,9 @@
 <header class="barra">
   <span class="logo">🔎 SEACE Alertas</span>
   <nav>
-    <a href="#" class="activo">Buscar</a>
+    <a href="#buscar" id="navBuscar" class="activo">Buscar</a>
+    <a href="#alertas" id="navAlertas">Mis alertas</a>
+    <a href="#carteras" id="navCarteras">Carteras</a>
   </nav>
   <div class="usuario">
     <span id="quienSoy"></span>
@@ -20,6 +22,8 @@
 </header>
 
 <main>
+
+<section id="vistaBuscar">
 
   <!-- ── Búsqueda ─────────────────────────────────────────────────────── -->
   <div class="panel">
@@ -76,6 +80,10 @@
       <details class="multi" id="mMetodo"><summary>Método</summary><div class="lista"></div></details>
       <label class="conmutador"><input type="checkbox" id="conAdjudicacion"> Con ganador</label>
       <label class="conmutador" title="Procesos en los que se presentó un único postor"><input type="checkbox" id="soloUnPostor"> Un solo postor</label>
+      <select id="aplicarCartera" title="Aplicar una cartera de entidades" style="margin-left:auto;">
+        <option value="">Usar una cartera…</option>
+      </select>
+      <button class="btn" id="nuevaAlerta">🔔 Crear alerta con estos filtros</button>
     </div>
   </div>
 
@@ -84,6 +92,77 @@
   <div class="panel" id="panelStats" hidden></div>
   <div id="resultados"></div>
   <div class="paginacion" id="paginacion"></div>
+
+</section>
+
+<!-- ── Mis alertas ────────────────────────────────────────────────────── -->
+<section id="vistaAlertas" hidden>
+  <div class="panel">
+    <h2 class="tituloVista">🔔 Mis alertas</h2>
+    <p class="ayuda" style="margin:0;">
+      Una alerta guarda unos filtros y te avisa por correo cuando el SEACE publica algo que encaja.
+      Crea una desde <a href="#buscar" id="irABuscar">Buscar</a>, con los filtros ya puestos.
+    </p>
+  </div>
+  <div id="listaAlertas"></div>
+</section>
+
+<!-- ── Carteras ───────────────────────────────────────────────────────── -->
+<section id="vistaCarteras" hidden>
+  <div class="panel">
+    <h2 class="tituloVista">📁 Carteras de entidades</h2>
+    <p class="ayuda">
+      Un grupo de entidades que se usa como una sola: “Sector Salud”, “Municipalidades de Lima”,
+      “Entidades del cliente Fulano”. Se define una vez y sirve para cualquier búsqueda o alerta.
+    </p>
+    <div class="fila" style="gap:8px;align-items:flex-end;">
+      <div class="campo" style="flex:1;min-width:220px;">
+        <label for="carteraNombre">Nombre de la cartera</label>
+        <input type="text" id="carteraNombre" placeholder="Sector Salud">
+      </div>
+      <div class="campo autocompletar" style="flex:1;min-width:220px;">
+        <label for="carteraEntidad">Añadir entidad</label>
+        <input type="text" id="carteraEntidad" placeholder="ESSALUD, MINSA…" autocomplete="off">
+        <div class="sugerencias" id="sugCartera" hidden></div>
+      </div>
+      <button class="btn primario" id="crearCartera">Crear cartera</button>
+    </div>
+    <div class="fichas" id="fichasCartera"></div>
+  </div>
+  <div id="listaCarteras"></div>
+</section>
+
+<!-- ── Diálogo: crear alerta ──────────────────────────────────────────── -->
+<div class="velo" id="veloAlerta" hidden>
+  <div class="dialogo">
+    <h2>🔔 Nueva alerta</h2>
+    <p class="ayuda" id="resumenFiltrosAlerta"></p>
+
+    <div class="campo"><label for="alertaNombre">Nombre</label>
+      <input type="text" id="alertaNombre" placeholder="EsSalud · servicios de limpieza"></div>
+
+    <div class="campo" style="margin-top:14px;">
+      <label>¿Cada cuánto?</label>
+      <div class="opciones" id="opcionesFrecuencia">
+        <label><input type="radio" name="frec" value="horaria"> Apenas se publique <span class="menor">(revisa cada hora, 7–20 h)</span></label>
+        <label><input type="radio" name="frec" value="diaria" checked> Una vez al día <select id="hora1"></select></label>
+        <label><input type="radio" name="frec" value="dosDiarias"> Dos veces al día <select id="hora2a"></select> <select id="hora2b"></select></label>
+        <label><input type="radio" name="frec" value="semanal"> Semanal <select id="diaSemana"></select> <select id="hora3"></select></label>
+      </div>
+    </div>
+
+    <label class="conmutador" style="margin-top:14px;">
+      <input type="checkbox" id="enviarVacios"> Avísame también cuando no haya novedades
+    </label>
+
+    <div class="aviso" id="avisoAlerta" hidden></div>
+
+    <div class="botonera">
+      <button class="btn" id="cancelarAlerta">Cancelar</button>
+      <button class="btn primario" id="guardarAlerta">Crear alerta</button>
+    </div>
+  </div>
+</div>
 
 </main>
 

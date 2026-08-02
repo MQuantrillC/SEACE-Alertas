@@ -83,11 +83,14 @@ Dependencias: solo **`adm-zip`** (descomprimir los meses) y **`nodemailer`** (SM
 
 ## 3.bis Capa nueva: datos.db (SQLite)
 
-⚠ **Estado de la migración (2026-08-01).** El buscador (`npm run web`) ya corre
-entero sobre SQLite. **El digest (`npm run digest`) y el runner de alertas
-(`npm run alertas`) siguen en el camino viejo** (`bulk.mjs`, `search.mjs`,
-`alertasStore.mjs`, `alertas.json`) y arrastran sus bugs. Se migran en el
-siguiente paso; por eso esos módulos todavía no se borran.
+✅ **Migración completa (2026-08-01).** El buscador y las alertas corren sobre
+SQLite. Se borraron `alertas.mjs`, `alertasStore.mjs`, `search.mjs`,
+`web/index.html` y `web/entidad.html`. `alertas.json` y `seguimientos.json` quedan
+huérfanos: ya no los lee nadie, se pueden borrar.
+
+Lo único que sigue en el camino viejo es el **digest de Xertica**
+(`npm run digest`), que usa `seace.mjs`, `digest.mjs` y `config.json`. Es un
+producto aparte y no estorba (ver decisión abierta en [PLAN.md](PLAN.md) §10).
 
 ```
 src/db.mjs         Esquema y conexión de datos/datos.db (gitignored)
@@ -144,6 +147,34 @@ Reglas que NO hay que romper al tocar esto:
 
 Variables de entorno nuevas: `BASE_URL` (para los enlaces de los correos),
 `REGISTRO_ABIERTO`, `COOKIE_SECURE`, `CUENTAS_DB`.
+
+### Alertas, carteras y envíos
+
+```
+src/alertasModelo.mjs  Cadencia, programación, firmas de baja, CRUD de alertas
+src/enviarAlerta.mjs   Evaluar y enviar (lo comparten el runner y "Probar ahora")
+src/correosAlerta.mjs  HTML del correo de alerta
+src/runner.mjs         Runner programado.  npm run alertas
+```
+
+Reglas que NO hay que romper:
+
+- **El planificador es tonto: se programa CADA HORA y siempre.** El runner mira
+  `proximo_envio` y procesa solo lo vencido. Añadir cadencias no toca el
+  Programador de tareas. Comando recomendado: `npm run cron`
+  (ingesta de 2 meses + runner).
+- **Nada se envía entre las 20:00 y las 07:00** (hora de Lima). Las horas
+  elegibles en la interfaz van de 07:00 a 20:00.
+- **`ultima_fecha` es un DÍA DE LIMA (`YYYY-MM-DD`), no un instante UTC.** Se
+  compara con `procesos.fecha_dia`, que también lo es. Guardar un ISO UTC hacía
+  que por la tarde el corte saltara al día siguiente y la alerta se saltara en
+  silencio todo lo publicado hoy. Usar `corteADiaLima()`.
+- **El corte avanza a la publicación más reciente enviada**, nunca a "ahora": si
+  el OECE regenera el archivo con retraso, saltar a ahora se comería ese hueco.
+- **El enlace de baja va firmado con HMAC** (`firmaBaja`), no es un token en tabla:
+  no caduca —un enlace de baja que caduca es una trampa— y no se puede falsificar.
+  La ruta `/baja` es pública a propósito.
+- Tope de 40 procesos por correo (`MAX_POR_CORREO`); el correo avisa si recortó.
 
 ```bash
 npm run usuario -- --crear ana@estudio.pe --nombre "Ana" --estudio "Estudio X"

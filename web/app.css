@@ -242,3 +242,57 @@ details.multi .lista .acciones button:hover { border-color: var(--azul); color: 
 }
 
 .cargando { color: var(--suave); font-size: 13px; padding: 8px 2px; }
+
+/* ── Alertas y carteras ─────────────────────────────────────────────────── */
+
+.tituloVista { font-size: 17px; margin: 0 0 8px; color: var(--azul); }
+.fila { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.item {
+  background: #fff; border: 1px solid var(--borde); border-radius: var(--radio);
+  padding: 15px 17px; margin-bottom: 11px;
+}
+.item .cab { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.item h3 { margin: 0; font-size: 15px; }
+.item .cad { font-size: 12px; color: var(--suave); margin-top: 3px; }
+.item .filtrosRes { font-size: 12px; color: var(--tenue); margin-top: 6px; line-height: 1.5; }
+.item .der { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.item .seccion { margin-top: 12px; padding-top: 11px; border-top: 1px solid #f3f4f6; }
+.item .seccion h4 {
+  margin: 0 0 7px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--tenue);
+}
+
+.suscriptor { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
+.suscriptor .est { font-size: 10px; font-weight: bold; border-radius: 9px; padding: 2px 7px; }
+.est-aceptada { color: #065f46; background: #ecfdf5; }
+.est-pendiente { color: #92400e; background: #fef3c7; }
+.est-baja { color: var(--tenue); background: var(--fondo); }
+.suscriptor button { margin-left: auto; }
+
+.pausada { opacity: .65; }
+.pausada h3::after { content: ' · en pausa'; font-weight: normal; color: var(--tenue); font-size: 12px; }
+
+.historial { font-size: 12px; color: var(--suave); line-height: 1.7; }
+.historial .fecha { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--tenue); }
+
+/* ── Diálogo ────────────────────────────────────────────────────────────── */
+
+.velo {
+  position: fixed; inset: 0; background: rgba(17, 24, 39, .45); z-index: 100;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.dialogo {
+  background: #fff; border-radius: 14px; padding: 26px 28px; width: 100%; max-width: 520px;
+  max-height: 90vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0, 0, 0, .22); border-top: 4px solid var(--rosa);
+}
+.dialogo h2 { margin: 0 0 6px; font-size: 18px; color: var(--azul); }
+.dialogo .opciones { display: flex; flex-direction: column; gap: 9px; }
+.dialogo .opciones label {
+  display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 9px 11px;
+  border: 1px solid var(--borde); border-radius: 8px; cursor: pointer;
+}
+.dialogo .opciones label:has(input:checked) { border-color: var(--azul); background: var(--azul-claro); }
+.dialogo .opciones input[type=radio] { width: auto; }
+.dialogo .opciones select { width: auto; padding: 5px 8px; font-size: 13px; }
+.dialogo .menor { font-size: 12px; color: var(--tenue); }
+.botonera { display: flex; gap: 8px; justify-content: flex-end; margin-top: 22px; }
