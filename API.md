@@ -62,7 +62,7 @@ luego bajar el detalle con `supplierID`.
 | Campo | Cobertura | Valores |
 |---|---|---|
 | `tender.procurementMethodDetails` | 100 % | **17 valores** (ver §3) |
-| `tender.mainProcurementCategory` | 100 % | `goods` 2.474 · `services` 2.229 · `works` 873 |
+| `tender.mainProcurementCategory` | 100 % | **Solo 3 valores** — ver ⚠ abajo |
 | `tender.value.amount` | 43,6 % > 0 | El resto lo protege la ley |
 | `tender.value.currency` | 100 % | PEN 5.483 · **USD 86 · EUR 5 · GBP 2** |
 | `tender.value.amount_PEN` | ver ⚠ | Normalizado a soles |
@@ -76,6 +76,33 @@ real > 0 falta en el **10 % de los USD** y en algunos EUR. Rellenarlo con 0 har�
 que un proceso de USD 2 M contara como cero sin que nadie lo note; la ingesta lo
 deja en **NULL** para poder contarlo y declararlo (18 procesos de 12.618 en la
 prueba de 2 meses). Ratios reales cuando sí viene: USD ≈ 3,5 · EUR ≈ 4,2 · GBP ≈ 4,9.
+
+### ⚠ El objeto de contratación viene con 3 valores, no con los 4 del SEACE
+
+El SEACE distingue **Bien · Servicio · Obra · Consultoría de Obra**. La publicación
+OCDS solo trae tres:
+
+```
+goods 2.474 · services 2.229 · works 873      (julio 2026)
+```
+
+`additionalProcurementCategories` **no ayuda**: duplica exactamente el valor de
+`mainProcurementCategory` en el 100 % de los casos. Y **Consultoría de Obra va
+dentro de `services`** — comprobado: los 1.461 procesos con método "Concurso
+Público para Consultoría" están todos como `services`, igual que los ~3.250 cuya
+descripción dice "supervisión de la obra".
+
+**Reconstrucción.** La ingesta marca `procesos.es_consultoria` con dos señales del
+propio dato, no con heurísticas de texto:
+
+1. `additionalClassifications` **UNSPSC familia 8110** ("servicios profesionales de
+   ingeniería" = supervisión de obra y expediente técnico). Se compara la familia
+   de 4 dígitos, no el segmento `81`, porque `8111` es informática.
+2. `procurementMethodDetails` que contenga "consultor".
+
+Resultado sobre 24 meses: **Bienes 65.537 · Servicios 51.841 · Obras 20.202 ·
+Consultoría de obra 14.593**. En la interfaz se muestran como cuatro categorías
+excluyentes, igual que en el SEACE.
 
 ### ⚠ Plazos: cuál sirve para avisar y cuál no
 

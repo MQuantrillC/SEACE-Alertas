@@ -254,6 +254,12 @@ que también haya señal alta.
 - **La lista de estados de `web/index.html` está incompleta**: los datos traen 12
   estados, la UI ofrece 8. Faltan `SUSPENDIDO`, `RETROTRAIDO_POR_RESOLUCION`,
   `DEJAR_SIN_EFECTO_ADJUDICACION`, `PENDIENTE_DE_REGISTRO_DE_EFECTO`.
+  (Resuelto en el buscador nuevo: la lista sale de los datos — 14 estados.)
+- **El objeto de contratación llega con 3 valores, no con los 4 del SEACE.**
+  "Consultoría de Obra" viaja dentro de `services` y `additionalProcurementCategories`
+  solo duplica el valor principal. Se reconstruye en la ingesta
+  (`procesos.es_consultoria`) con UNSPSC 8110 + método "consultor" — 14.593 procesos
+  en 24 meses. Ver [API.md](API.md) §2.
 - **`iso()` del frontend usa UTC** → después de las 19:00 de Lima, el filtro "Hoy"
   pide el día siguiente y devuelve 0 resultados.
 - **Cobertura de datos (julio 2026, 5.576 procesos)**: monto referencial > 0 en el

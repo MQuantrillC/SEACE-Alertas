@@ -98,10 +98,21 @@ function condiciones(db, f) {
   if (f.desde) { where.push('p.fecha_dia >= ?'); par.push(f.desde); }
   if (f.hasta) { where.push('p.fecha_dia <= ?'); par.push(f.hasta); }
 
-  for (const [campo, col] of [['categorias', 'p.categoria'], ['metodos', 'p.metodo']]) {
-    const v = lista(f[campo]);
-    if (v.length) { where.push(`${col} IN (${marcas(v.length)})`); par.push(...v); }
+  // Categorías: se exponen las 4 de SEACE. 'consultoriaObra' y 'services' son
+  // excluyentes entre sí, como en el SEACE, aunque en el dato ambas sean 'services'.
+  const cats = lista(f.categorias);
+  if (cats.length) {
+    const trozos = [];
+    for (const c of cats) {
+      if (c === 'consultoriaObra') trozos.push(`(p.categoria = 'services' AND p.es_consultoria = 1)`);
+      else if (c === 'services') trozos.push(`(p.categoria = 'services' AND p.es_consultoria = 0)`);
+      else { trozos.push(`p.categoria = ?`); par.push(c); }
+    }
+    where.push('(' + trozos.join(' OR ') + ')');
   }
+
+  const mets = lista(f.metodos);
+  if (mets.length) { where.push(`p.metodo IN (${marcas(mets.length)})`); par.push(...mets); }
 
   const deps = lista(f.departamentos);
   if (deps.length) {
@@ -309,7 +320,8 @@ export function estadisticas(db, filtros = {}, { medida = 'procesos', top = 10 }
     },
     entidades: grupo('e.nombre', 'LEFT JOIN entidades e ON e.id = p.entidad_id'),
     proveedores,
-    categorias: grupo('p.categoria'),
+    categorias: grupo(`CASE WHEN p.categoria = 'services' AND p.es_consultoria = 1
+                            THEN 'consultoriaObra' ELSE p.categoria END`),
     departamentos: grupo('e.departamento', 'LEFT JOIN entidades e ON e.id = p.entidad_id'),
     porMes,
   };
@@ -319,8 +331,12 @@ export function estadisticas(db, filtros = {}, { medida = 'procesos', top = 10 }
 export function facetas(db) {
   const col = (s) => db.prepare(s).all();
   return {
-    categorias: col(`SELECT categoria AS valor, count(*) AS n FROM procesos
-                     WHERE categoria IS NOT NULL GROUP BY categoria ORDER BY n DESC`),
+    // Las 4 de SEACE, no las 3 de OCDS.
+    categorias: col(`SELECT CASE
+                       WHEN categoria = 'services' AND es_consultoria = 1 THEN 'consultoriaObra'
+                       ELSE categoria END AS valor, count(*) AS n
+                     FROM procesos WHERE categoria IS NOT NULL
+                     GROUP BY valor ORDER BY n DESC`),
     metodos: col(`SELECT metodo AS valor, count(*) AS n FROM procesos
                   WHERE metodo IS NOT NULL GROUP BY metodo ORDER BY n DESC`),
     estados: col(`SELECT estado AS valor, count(*) AS n FROM proceso_estado

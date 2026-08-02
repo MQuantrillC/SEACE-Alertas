@@ -87,6 +87,31 @@ function entidadDe(rel) {
   };
 }
 
+/**
+ * ¿Es "Consultoría de Obra"?
+ *
+ * SEACE tiene 4 objetos de contratación pero OCDS solo publica 3
+ * (`goods`/`services`/`works`), y consultoría de obra va metida en `services`.
+ * Se reconstruye con dos señales del propio dato, no con adivinanzas de texto:
+ *
+ *   · UNSPSC familia 8110 — "servicios profesionales de ingeniería", que es
+ *     exactamente supervisión de obra y elaboración de expediente técnico.
+ *     Ojo: 8111 es informática, por eso se compara la familia de 4 dígitos y
+ *     no el segmento 81 entero.
+ *   · procurementMethodDetails con "consultor" (Concurso Público para
+ *     Consultoría, Selección de Consultores Individuales).
+ */
+function esConsultoriaObra(t) {
+  if (t.mainProcurementCategory !== 'services') return 0;
+  if (/consultor/i.test(t.procurementMethodDetails ?? '')) return 1;
+  for (const it of t.items ?? []) {
+    for (const c of it.additionalClassifications ?? []) {
+      if (c.scheme === 'UNSPSC' && String(c.id).startsWith('8110')) return 1;
+    }
+  }
+  return 0;
+}
+
 function procesoDe(rel, mes) {
   const t = rel.tender ?? {};
   const monto = t.value?.amount ?? 0;
@@ -127,6 +152,7 @@ function procesoDe(rel, mes) {
     n_postores: t.numberOfTenderers ?? (t.tenderers ?? []).length,
     proyecto: rel.planning?.budget?.project ?? null,
     proyecto_id: rel.planning?.budget?.projectID ?? null,
+    es_consultoria: esConsultoriaObra(t),
   };
 }
 
@@ -146,10 +172,10 @@ const sql = {
   proceso: db.prepare(`INSERT OR REPLACE INTO procesos
     (ocid,mes,tender_id,nomenclatura,descripcion,entidad_id,categoria,metodo,monto,moneda,monto_pen,
      protegido,fecha,fecha_dia,cierre_ofertas,tender_ini,tender_fin,enquiry_ini,enquiry_fin,
-     n_postores,proyecto,proyecto_id)
+     n_postores,proyecto,proyecto_id,es_consultoria)
     VALUES (@ocid,@mes,@tender_id,@nomenclatura,@descripcion,@entidad_id,@categoria,@metodo,@monto,@moneda,
      @monto_pen,@protegido,@fecha,@fecha_dia,@cierre_ofertas,@tender_ini,@tender_fin,@enquiry_ini,
-     @enquiry_fin,@n_postores,@proyecto,@proyecto_id)`),
+     @enquiry_fin,@n_postores,@proyecto,@proyecto_id,@es_consultoria)`),
   estado: db.prepare('INSERT OR IGNORE INTO proceso_estado (ocid,estado) VALUES (?,?)'),
   item: db.prepare(`INSERT INTO items (id,ocid,posicion,descripcion,cantidad,unidad,monto,estado,cubso_id,cubso_desc,unspsc_id,unspsc_desc)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),

@@ -84,7 +84,11 @@ CREATE TABLE IF NOT EXISTS procesos (
   enquiry_fin    TEXT,
   n_postores     INTEGER DEFAULT 0,
   proyecto       TEXT,
-  proyecto_id    TEXT
+  proyecto_id    TEXT,
+  -- SEACE distingue 4 objetos de contratación (Bien / Servicio / Obra /
+  -- Consultoría de Obra) pero la publicación OCDS solo trae 3: consultoría de
+  -- obra viaja dentro de 'services'. Esta bandera la reconstruye. Ver API.md §6.
+  es_consultoria INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_proc_fecha   ON procesos(fecha_dia DESC);
 CREATE INDEX IF NOT EXISTS ix_proc_entidad ON procesos(entidad_id);
@@ -207,6 +211,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS proveedores_fts USING fts5(
 `;
 
 /** Abre datos.db (creándola si hace falta) con el esquema aplicado. */
+/** Columnas añadidas después de la primera versión del esquema.
+ *  CREATE TABLE IF NOT EXISTS no toca una tabla que ya existe, así que sin esto
+ *  una base ya ingestada se quedaría sin las columnas nuevas. */
+const MIGRACIONES = [
+  ['procesos', 'es_consultoria', 'INTEGER NOT NULL DEFAULT 0'],
+];
+
+function migrar(db) {
+  for (const [tabla, columna, tipo] of MIGRACIONES) {
+    const cols = db.prepare(`PRAGMA table_info(${tabla})`).all().map((c) => c.name);
+    if (cols.length && !cols.includes(columna)) {
+      db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${columna} ${tipo}`);
+      console.log(`   · esquema: se añadió ${tabla}.${columna}`);
+    }
+  }
+}
+
 export function abrirDatos({ soloLectura = false } = {}) {
   mkdirSync(dirname(DATOS_DB), { recursive: true });
   const db = new Database(DATOS_DB, { readonly: soloLectura });
@@ -215,6 +236,7 @@ export function abrirDatos({ soloLectura = false } = {}) {
   if (!soloLectura) {
     db.pragma('synchronous = NORMAL');
     db.exec(ESQUEMA);
+    migrar(db);
     db.prepare('INSERT OR REPLACE INTO meta (clave, valor) VALUES (?, ?)')
       .run('esquema_version', String(ESQUEMA_VERSION));
   }

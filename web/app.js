@@ -3,7 +3,14 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-const CATEGORIAS = { goods: 'Bienes', services: 'Servicios', works: 'Obras', consultingServices: 'Consultoría' };
+// Los 4 objetos de contratación del SEACE. 'consultoriaObra' no viene en el dato
+// del OECE (que solo trae 3): se reconstruye en la ingesta — ver API.md §6.
+const CATEGORIAS = {
+  goods: 'Bienes',
+  services: 'Servicios',
+  works: 'Obras',
+  consultoriaObra: 'Consultoría de obra',
+};
 const DOCS = {
   biddingDocuments: '📄 Bases',
   clarifications: '❓ Consultas y observaciones',
@@ -43,22 +50,61 @@ const diasHasta = (iso) => Math.ceil((Date.parse(iso.slice(0, 10) + 'T00:00:00-0
 
 // ── Desplegables con casillas ───────────────────────────────────────────────
 
+/**
+ * Desplegable de casillas. Todas marcadas de entrada = "sin filtrar".
+ *
+ * Convención (importa): si están TODAS marcadas no se manda el filtro al
+ * servidor. No es lo mismo que mandar la lista entera — hay procesos sin
+ * departamento o sin método, y enumerar todos los valores conocidos los dejaría
+ * fuera sin que nadie entienda por qué. "Ninguno" sí es un estado real: cero
+ * resultados a propósito, y se avisa en pantalla.
+ */
 function montarMulti(id, titulo, opciones) {
   const det = $(id);
-  det.querySelector('.lista').innerHTML = opciones.map((o) =>
-    `<label><input type="checkbox" value="${esc(o.valor)}"> <span>${esc(o.label)}</span>` +
-    `${o.n != null ? `<span class="cuenta">${fmtNum(o.n)}</span>` : ''}</label>`).join('');
+  det.querySelector('.lista').innerHTML =
+    `<div class="acciones">
+       <button type="button" data-accion="todos">Todos</button>
+       <button type="button" data-accion="ninguno">Ninguno</button>
+     </div>` +
+    opciones.map((o) =>
+      `<label><input type="checkbox" value="${esc(o.valor)}" checked> <span>${esc(o.label)}</span>` +
+      `${o.n != null ? `<span class="cuenta">${fmtNum(o.n)}</span>` : ''}</label>`).join('');
+
   det.addEventListener('change', () => { resumenMulti(det, titulo); estado.pagina = 1; buscar(); });
+  for (const b of det.querySelectorAll('.acciones button')) {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      const marcar = b.dataset.accion === 'todos';
+      for (const c of det.querySelectorAll('input[type=checkbox]')) c.checked = marcar;
+      resumenMulti(det, titulo);
+      estado.pagina = 1;
+      buscar();
+    });
+  }
+  det.dataset.titulo = titulo;
   resumenMulti(det, titulo);
 }
+
 function resumenMulti(det, titulo) {
-  const n = det.querySelectorAll('input:checked').length;
-  det.querySelector('summary').textContent = n ? `${titulo} (${n})` : titulo;
+  const total = det.querySelectorAll('input[type=checkbox]').length;
+  const n = det.querySelectorAll('input[type=checkbox]:checked').length;
+  const s = det.querySelector('summary');
+  s.textContent = n === total ? titulo : n === 0 ? `${titulo} (ninguno)` : `${titulo} (${n})`;
+  s.classList.toggle('filtrado', n !== total);
 }
-const valoresMulti = (id) => [...$(id).querySelectorAll('input:checked')].map((c) => c.value);
+
+/** → { valores, todos, ninguno } */
+function valoresMulti(id) {
+  const cbs = [...$(id).querySelectorAll('input[type=checkbox]')];
+  const valores = cbs.filter((c) => c.checked).map((c) => c.value);
+  return { valores, todos: valores.length === cbs.length, ninguno: valores.length === 0 };
+}
+
+/** Restaura desde la URL. Sin valores en la URL ⇒ todas marcadas. */
 function fijarMulti(id, valores, titulo) {
+  const cbs = [...$(id).querySelectorAll('input[type=checkbox]')];
   const set = new Set(valores);
-  for (const c of $(id).querySelectorAll('input')) c.checked = set.has(c.value);
+  for (const c of cbs) c.checked = set.size === 0 ? true : set.has(c.value);
   resumenMulti($(id), titulo);
 }
 
@@ -148,6 +194,20 @@ function pintarFichas() {
 
 // ── Filtros → parámetros ────────────────────────────────────────────────────
 
+const MULTIS = [
+  ['mCategoria', 'categorias', 'Categoría'],
+  ['mEstado', 'estados', 'Estado'],
+  ['mMonto', 'montos', 'Monto'],
+  ['mDepartamento', 'departamentos', 'Departamento'],
+  ['mMetodo', 'metodos', 'Método'],
+];
+
+/** Si algún desplegable está en "ninguno", devuelve su título. */
+function filtroVacio() {
+  for (const [id, , titulo] of MULTIS) if (valoresMulti(id).ninguno) return titulo;
+  return null;
+}
+
 function parametros() {
   const { desde, hasta } = fechas();
   const p = new URLSearchParams();
@@ -156,11 +216,10 @@ function parametros() {
   poner('objeto', $('objeto').value.trim());
   poner('proveedor', estado.proveedor || $('proveedor').value.trim());
   poner('desde', desde); poner('hasta', hasta);
-  poner('categorias', valoresMulti('mCategoria'));
-  poner('estados', valoresMulti('mEstado'));
-  poner('montos', valoresMulti('mMonto'));
-  poner('departamentos', valoresMulti('mDepartamento'));
-  poner('metodos', valoresMulti('mMetodo'));
+  for (const [id, clave] of MULTIS) {
+    const m = valoresMulti(id);
+    if (!m.todos) poner(clave, m.valores);   // "todos" ⇒ no se manda el filtro
+  }
   if ($('conAdjudicacion').checked) p.set('conAdjudicacion', '1');
   if ($('soloUnPostor').checked) p.set('soloUnPostor', '1');
   return p;
@@ -250,6 +309,20 @@ async function buscar() {
   $('buscar').disabled = true;
   $('resumen').innerHTML = '<span class="cargando">Buscando…</span>';
   guardarEnUrl();
+
+  // "Ninguno" en un desplegable no se consulta: por definición no hay nada que
+  // encontrar, y decirlo es más útil que devolver una lista vacía sin motivo.
+  const vacio = filtroVacio();
+  if (vacio) {
+    $('resumen').innerHTML = '<b>0</b> resultados';
+    $('resultados').innerHTML = `<div class="vacio-msg">
+      <b>Ningún valor seleccionado en “${esc(vacio)}”</b>
+      <div class="sug">Con ese filtro en blanco no puede haber resultados.
+      Abre <b>${esc(vacio)}</b> y pulsa <b>Todos</b> para restaurarlo.</div></div>`;
+    $('paginacion').innerHTML = '';
+    buscando = false; $('buscar').disabled = false;
+    return;
+  }
 
   try {
     const p = parametros();
@@ -418,8 +491,7 @@ $('limpiar').addEventListener('click', () => {
   $('periodo').value = '30'; $('rangoFechas').hidden = true;
   $('desde').value = ''; $('hasta').value = '';
   $('conAdjudicacion').checked = false; $('soloUnPostor').checked = false;
-  for (const [id, t] of [['mCategoria', 'Categoría'], ['mEstado', 'Estado'], ['mMonto', 'Monto'],
-    ['mDepartamento', 'Departamento'], ['mMetodo', 'Método']]) fijarMulti(id, [], t);
+  for (const [id, , titulo] of MULTIS) fijarMulti(id, [], titulo);
   pintarFichas(); buscar();
 });
 $('salir').addEventListener('click', async () => {
@@ -441,12 +513,8 @@ $('salir').addEventListener('click', async () => {
   montarMulti('mMetodo', 'Método', facetas.metodos.map((m) => ({ valor: m.valor, label: m.valor, n: m.n })));
 
   const p = leerDeUrl();
-  if (p) {
-    fijarMulti('mCategoria', (p.get('categorias') ?? '').split(',').filter(Boolean), 'Categoría');
-    fijarMulti('mEstado', (p.get('estados') ?? '').split(',').filter(Boolean), 'Estado');
-    fijarMulti('mMonto', (p.get('montos') ?? '').split(',').filter(Boolean), 'Monto');
-    fijarMulti('mDepartamento', (p.get('departamentos') ?? '').split(',').filter(Boolean), 'Departamento');
-    fijarMulti('mMetodo', (p.get('metodos') ?? '').split(',').filter(Boolean), 'Método');
+  if (p) for (const [id, clave, titulo] of MULTIS) {
+    fijarMulti(id, (p.get(clave) ?? '').split(',').filter(Boolean), titulo);
   }
   $('panelStats').hidden = !estado.stats;
   pintarFichas();
