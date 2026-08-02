@@ -224,10 +224,28 @@ npm run alertas
 
 ### Correo
 
-Copia `.env.example` → `.env` y completa `SMTP_HOST/PORT/USER/PASS`. Con Google
-Workspace hay que usar una *contraseña de aplicación*. Los scripts ya cargan `.env`
-solos (`node --env-file-if-exists=.env`) — no hace falta exportar nada.
-Sin `SMTP_USER`/`SMTP_PASS` el envío se omite con un aviso; el digest igual se genera.
+Copia `.env.example` → `.env` y completa las `SMTP_*`. Con Google Workspace hace
+falta una *contraseña de aplicación* (y verificación en dos pasos en la cuenta).
+Los scripts cargan `.env` solos — no hace falta exportar nada.
+
+```bash
+npm run correo                          # comprueba conexión y credenciales, sin enviar nada
+npm run correo -- --enviar tu@correo.pe # manda un mensaje de prueba real
+```
+
+Estado verificado el **2026-08-01**: `marco.quantrill@xertica.com` por
+`smtp.gmail.com:465` **autentica correctamente**.
+
+Detalles que ahorran tiempo:
+
+- La contraseña de aplicación puede pegarse **con o sin espacios**: Gmail acepta
+  ambas (comprobado), y además `send.mjs` los quita por si acaso.
+- **`BASE_URL` es lo que hay que cambiar al desplegar.** Los enlaces de acceso,
+  invitación y baja se construyen con esa variable; si se queda en `localhost`
+  los correos llegarán con enlaces que solo funcionan en tu máquina.
+- Sin `SMTP_USER`/`SMTP_PASS` no se rompe nada: los enlaces de acceso se imprimen
+  en la consola del servidor y las alertas se saltan con un aviso.
+- Un fallo de envío no tumba el runner: queda en `envios.error` y sigue con el resto.
 
 ## 5. Configuración y estado
 

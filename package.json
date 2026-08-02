@@ -16,6 +16,7 @@
     "ingesta": "node --max-old-space-size=4096 src/ingesta.mjs",
     "cron": "npm run ingesta -- --meses 2 && npm run alertas",
     "usuario": "node --env-file-if-exists=.env src/usuario.mjs",
+    "correo": "node --env-file-if-exists=.env src/correo.mjs",
     "test": "node src/verificar-cuentas.mjs && node src/verificar-alertas.mjs && node src/verificar.mjs && node src/verificar-siglas.mjs"
   },
   "dependencies": {
